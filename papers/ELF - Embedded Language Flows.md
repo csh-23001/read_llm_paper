@@ -88,7 +88,28 @@ $$
 - **Self-conditioning**：标准 Flow Matching 一次前向得到 $\hat x'$，再把 $\hat x'$ 作为条件拼回输入做第二次前向，输出 $\hat x = \text{net}_\theta(z_t \mid \hat x', t)$；训练时 50% 概率用 $\hat x'$，否则用 0 条件。
 - **CFG**：$v_{\text{cfg}}(z_t \mid c) = \omega\, v(z_t \mid c) + (1 - \omega)\, v(z_t \mid \emptyset)$，其中 $c$ 就来自 self-conditioning。
 - 为了避免推理时双前向，作者直接用 **training-time CFG**（一次前向就建模 $v_{\text{cfg}}$），相当于把 [Visual generation without guidance, ICML 2025] 那一类技术搬过来。
-- 条件生成（翻译 / 摘要）做法：把 condition 的干净 embedding **不加噪**地拼到模型输入前面，让 self-attention 直接看到。
+
+### 2.6 输入输出长度不同怎么处理
+
+ELF 是 **non-autoregressive** 的，每次 forward 都在一个**固定长度 $L$** 的张量上跑。"输入输出长度不同"通过**位置预分配 + 干净条件 prepend** 解决，**输出长度不是模型自适应推断的，而是预设超参数 `tgt_len`**：
+
+- 设 `cond_len`、`tgt_len` 为条件 / 目标长度上限，序列总长 $L = \text{cond\_len} + \text{tgt\_len}$ 固定。论文设置：
+  - WMT14 De→En：`cond_len = 64, tgt_len = 64, L = 128`
+  - XSum：`cond_len = 1024, tgt_len = 64, L = 1088`
+  - 无条件 OWT：`L = 1024`（packed sequences，没有 condition 段）
+- 张量布局：
+
+```
+位置:  [ 0 .. cond_len-1 ]      [ cond_len .. L-1 ]
+内容:  干净 condition embedding  noisy target embedding z_t
+噪声:  永远不加噪                按 Flow Matching 插值
+loss:  无                        MSE (denoise) / CE (decode)
+```
+
+- Condition 段在训练和推理**全程保持干净**（论文 §3.3 原话："prepend the clean embeddings ... and preserve them without corruption"），target 段才走 flow。两段通过 self-attention 互通。
+- CFG 的"无条件分支"就是把 condition 段置零 / 用 $\emptyset$ 替代。
+- 推理时 target 段从 $z_0 \sim \mathcal{N}(0, I)$ 出发，最后一步过 unembedding 拿到 `tgt_len` 个 token logits，再 `argmax`；**实际输出由 EOS / padding token 在评测脚本里截断得到**。
+- 代价：输出长度有硬性上限（XSum 摘要被 cap 在 64 token）；padding 位置仍然参与 flow，是显式的算力浪费。这是当前所有 non-AR diffusion / flow LM 的共同折衷，不是 ELF 独有的。
 
 ### 2.6 训练算法（Alg. 1 摘要）
 
