@@ -27,15 +27,15 @@ updated: 2026-11-12
 
 这份草稿模块依赖目标模型的中间特征，且复用目标模型的 token embedding 和 LM head。它与目标模型在同一推理流程中协作，不是重新加载一份完整的 2.8T 目标模型。
 
-| 部件 | 作用 | 是否额外的草稿参数 |
-|---|---|---|
-| Target backbone | 原来的 Kimi-K3.1-Pro；产生目标分布与上下文特征 | 主模型本身 |
-| Context projection | 融合选定目标层的 hidden states | 是 |
-| Draft backbone | 五层 dense MLA decoder，生成各候选位置的表示 | 是 |
-| Token embedding | 将 anchor/mask token 转为向量 | 与目标模型对应组件共享 |
-| LM head | 将草稿表示投影到词表，得到 base logits | 与目标模型对应组件共享 |
-| Markov head | 根据前一个 token 修正当前候选的 logits | 是 |
-| Confidence head | 预测接受相关的置信度，供可选的自适应验证使用 | 是；是否用于推理由配置决定 |
+| 部件                 | 作用                              | 是否额外的草稿参数     |
+| ------------------ | ------------------------------- | ------------- |
+| Target backbone    | 原来的 Kimi-K3.1-Pro；产生目标分布与上下文特征  | 主模型本身         |
+| Context projection | 融合选定目标层的 hidden states          | 是             |
+| Draft backbone     | 五层 dense MLA decoder，生成各候选位置的表示 | 是             |
+| Token embedding    | 将 anchor/mask token 转为向量        | 与目标模型对应组件共享   |
+| LM head            | 将草稿表示投影到词表，得到 base logits       | 与目标模型对应组件共享   |
+| Markov head        | 根据前一个 token 修正当前候选的 logits      | 是             |
+| Confidence head    | 预测接受相关的置信度，供可选的自适应验证使用          | 是；是否用于推理由配置决定 |
 
 [发布方模型卡](https://huggingface.co/Inferact/Kimi-K3.1-Pro-DSpark-preview)给出的额外草稿规模约为 2.7B、BF16。[vLLM 类实现](https://github.com/vllm-project/vllm/blob/ab72c466aaac03524e9282c66cd00daafce647dc/vllm/models/kimi_k3/nvidia/dspark_mla.py#L147)实际创建 decoder 层列表和两个附加 heads，并声明不拥有独立 embedding/LM head；[加载逻辑](https://github.com/vllm-project/vllm/blob/ab72c466aaac03524e9282c66cd00daafce647dc/vllm/v1/worker/gpu/spec_decode/dspark/utils.py#L112)将目标组件共享给它。
 
@@ -50,19 +50,19 @@ updated: 2026-11-12
 > [!note] 配置核对范围
 > 发布方模型卡和关键 vLLM 源码已核对；固定 revision 的 `config.json` 本次未能取回。模型卡可确认五层、2.7B、MLA、7168/14336、五个目标层、Markov rank 512、共享 embedding/LM head 等主要结构。词表精确大小、目标层编号、`tie_word_embeddings`、vanilla/anchor/Markov-confidence 等配置细项仍需按该文件复核；下文相关推导以列出的配置为前提。
 
-| 符号/配置 | 含义 | 本 checkpoint |
-|---|---|---:|
-| V | 词表大小 | 163840 |
-| d | 草稿 hidden dimension | 7168 |
-| dₜ | 目标 hidden dimension | 7168 |
-| m | 草稿 FFN 中间维度 | 14336 |
-| S | 提取的目标层数量 | 5 |
-| N | 草稿 decoder 层数 | 5 |
-| r | Markov 低秩维度 | 512 |
-| K | 本轮实际起草长度 | 参数选择 4；checkpoint 的 `block_size` 为 7 |
-| a | 已知的 anchor token | 通常为上一轮最终采样得到的 token |
-| Yᵢ | 本轮第 i 个候选 token | 随机变量 |
-| τ | 采样 temperature | 本文概率公式先假设大于零 |
+| 符号/配置 | 含义                  |                         本 checkpoint |
+| ----- | ------------------- | -----------------------------------: |
+| V     | 词表大小                |                               163840 |
+| d     | 草稿 hidden dimension |                                 7168 |
+| dₜ    | 目标 hidden dimension |                                 7168 |
+| m     | 草稿 FFN 中间维度         |                                14336 |
+| S     | 提取的目标层数量            |                                    5 |
+| N     | 草稿 decoder 层数       |                                    5 |
+| r     | Markov 低秩维度         |                                  512 |
+| K     | 本轮实际起草长度            | 参数选择 4；checkpoint 的 `block_size` 为 7 |
+| a     | 已知的 anchor token    |                  通常为上一轮最终采样得到的 token |
+| Yᵢ    | 本轮第 i 个候选 token     |                                 随机变量 |
+| τ     | 采样 temperature      |                         本文概率公式先假设大于零 |
 
 待按固定 revision 复核的配置细项：`markov_head_type: vanilla`、`sample_from_anchor: true`、`enable_confidence_head: true`、`confidence_head_with_markov: true`；选定目标层的配置编号为 `[75,79,83,87,91]`。这里保留配置编号，不擅自转换成另一种层编号惯例。
 

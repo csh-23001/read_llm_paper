@@ -28,31 +28,31 @@ updated: 2026-11-12
 
 ## 1. 从问题进入
 
-| 想弄清的问题 | 阅读位置 |
-|---|---|
-| MLA 已经压缩 KV，为什么 TP 后缓存还会复制？ | [[MLA-TP-DP-DCP#3. TP 拆分 heads，为什么每张卡还需要完整缓存？]] |
-| TP4、DP2 是否必须设置 DCP4？ | [[MLA-TP-DP-DCP#5. TP4、DP2 时，DCP 如何选？]] |
-| 通用参数合法，为什么 K3.1 专用后端仍会报错？ | [[MLA-TP-DP-DCP#6. 应用于 Kimi-K3.1-Pro，还要看专用路径的限制]] |
-| DSpark 草稿是不是一个输出 head？ | [[DSpark#0. 先回答：这个“草稿模型”是不是只是一个 head？]] |
-| 草稿骨干并行，token 之间怎样建立依赖？ | [[DSpark#3. Markov head 的实际数学结构]]、[[DSpark#4. 联合分布、因果性与“半自回归”]] |
-| Markov 修正如何进入目标验证？ | [[DSpark#8. Markov 分布怎样接入 block verification？]] |
-| 五层草稿、共享 LM head、Markov head 分别占多少参数？ | [[DSpark#9. 参数量、共享与串行开销]] |
+| 想弄清的问题                               | 阅读位置                                                            |
+| ------------------------------------ | --------------------------------------------------------------- |
+| MLA 已经压缩 KV，为什么 TP 后缓存还会复制？          | [[MLA-TP-DP-DCP#3. TP 拆分 heads，为什么每张卡还需要完整缓存？]]                 |
+| TP4、DP2 是否必须设置 DCP4？                 | [[MLA-TP-DP-DCP#5. TP4、DP2 时，DCP 如何选？]]                         |
+| 通用参数合法，为什么 K3.1 专用后端仍会报错？            | [[MLA-TP-DP-DCP#6. 应用于 Kimi-K3.1-Pro，还要看专用路径的限制]]               |
+| DSpark 草稿是不是一个输出 head？               | [[DSpark#0. 先回答：这个“草稿模型”是不是只是一个 head？]]                         |
+| 草稿骨干并行，token 之间怎样建立依赖？               | [[DSpark#3. Markov head 的实际数学结构]]、[[DSpark#4. 联合分布、因果性与“半自回归”]] |
+| Markov 修正如何进入目标验证？                   | [[DSpark#8. Markov 分布怎样接入 block verification？]]                 |
+| 五层草稿、共享 LM head、Markov head 分别占多少参数？ | [[DSpark#9. 参数量、共享与串行开销]]                                       |
 
 ## 2. 先抓住影响推理的架构
 
 论文 Table 1 和 §2 给出的 K3 主干配置：
 
-| 项目 | K3 | 对推理的含义 |
-|---|---|---|
-| 总参数 / 每 token 激活参数 | 2.78T / 104.2B | 总权重容量与每 token 的计算规模要分别考虑 |
-| 主干层数 | 93 | 包含 69 层 KDA、24 层 MLA |
-| Attention heads / hidden size | 96 / 7168 | TP 划分计算时需要考虑本地 head 数 |
-| 混合 attention | 3 层 KDA + 1 层 Gated MLA 周期，最后额外一层 MLA | 同时管理 recurrent state 与随历史增长的缓存 |
-| MLA 位置编码 | NoPE | 目标模型 MLA 不需要额外缓存 RoPE key 分量 |
-| Routed experts | 896，每 token 激活 16 | Expert 通信布局不等同于 attention 布局 |
-| Shared experts / latent MoE dimension | 2 / 3584 | 除 routed experts 外仍有投影与共享分支开销 |
-| MTP | 1 层 | 论文从该层微调 EAGLE-3 风格草稿 |
-| 上下文窗口 | 1M token | 长上下文使缓存布局、prefix cache 和 TTFT 更关键 |
+| 项目                                    | K3                                    | 对推理的含义                            |
+| ------------------------------------- | ------------------------------------- | --------------------------------- |
+| 总参数 / 每 token 激活参数                    | 2.78T / 104.2B                        | 总权重容量与每 token 的计算规模要分别考虑          |
+| 主干层数                                  | 93                                    | 包含 69 层 KDA、24 层 MLA              |
+| Attention heads / hidden size         | 96 / 7168                             | TP 划分计算时需要考虑本地 head 数             |
+| 混合 attention                          | 3 层 KDA + 1 层 Gated MLA 周期，最后额外一层 MLA | 同时管理 recurrent state 与随历史增长的缓存    |
+| MLA 位置编码                              | NoPE                                  | 目标模型 MLA 不需要额外缓存 RoPE key 分量      |
+| Routed experts                        | 896，每 token 激活 16                     | Expert 通信布局不等同于 attention 布局      |
+| Shared experts / latent MoE dimension | 2 / 3584                              | 除 routed experts 外仍有投影与共享分支开销     |
+| MTP                                   | 1 层                                   | 论文从该层微调 EAGLE-3 风格草稿              |
+| 上下文窗口                                 | 1M token                              | 长上下文使缓存布局、prefix cache 和 TTFT 更关键 |
 
 **激活 104.2B 参数不意味着只需存下 104.2B 参数。**在通常将权重驻留 GPU 的部署中，需要为全部权重及运行状态规划容量；每 token 的路由只决定本轮计算哪些专家。
 
@@ -105,14 +105,14 @@ $$
 
 ## 5. 论文草稿与 K3.1 DSpark 的区别
 
-| 比较项 | K3 论文 §4.1.4 | K3.1 的 Inferact DSpark checkpoint |
-|---|---|---|
-| 来源 | 预训练的单层 MTP 微调 | 发布方提供的专用草稿模块 |
-| 骨干 | 单 decoder 层，EAGLE-3 风格递归起草 | 五层 dense MLA decoder，约 2.7B BF16 额外参数 |
-| 目标特征 | 第 1、第 4、最后一个 AttnRes block 输出 | 五个目标层的 hidden states |
-| 候选依赖 | 草稿循环消费此前输出 | 骨干批量产生表示，Markov head 顺序修正并采样 |
-| 草稿长度信息 | 训练时展开 7 步 | 模型卡报告每 forward 起草 7 token；本笔记分析 K=4 |
-| 训练说明 | 目标冻结，优化 draft 和融合投影，使用 LK loss | 不能由 K3 论文推出该 checkpoint 的完整训练配方 |
+| 比较项    | K3 论文 §4.1.4                   | K3.1 的 Inferact DSpark checkpoint     |
+| ------ | ------------------------------ | ------------------------------------- |
+| 来源     | 预训练的单层 MTP 微调                  | 发布方提供的专用草稿模块                          |
+| 骨干     | 单 decoder 层，EAGLE-3 风格递归起草     | 五层 dense MLA decoder，约 2.7B BF16 额外参数 |
+| 目标特征   | 第 1、第 4、最后一个 AttnRes block 输出  | 五个目标层的 hidden states                  |
+| 候选依赖   | 草稿循环消费此前输出                     | 骨干批量产生表示，Markov head 顺序修正并采样          |
+| 草稿长度信息 | 训练时展开 7 步                      | 模型卡报告每 forward 起草 7 token；本笔记分析 K=4   |
+| 训练说明   | 目标冻结，优化 draft 和融合投影，使用 LK loss | 不能由 K3 论文推出该 checkpoint 的完整训练配方       |
 
 K3 的目标 MLA 使用 NoPE；[K3.1 DSpark 模型卡](https://huggingface.co/Inferact/Kimi-K3.1-Pro-DSpark-preview)另外声明了草稿的 causal MLA 与 YaRN。**目标模型和草稿模型的位置编码要分别读取配置。**
 
@@ -161,13 +161,13 @@ Checkpoint 带有 confidence head 也不意味着启用了自适应验证。[本
 
 以下是由机制得到的工程判断，不是 K3 的实测结论：
 
-| 观察指标 | 回答什么问题 | 比较时要固定什么 |
-|---|---|---|
-| 每 rank 的权重、目标缓存、草稿缓存和 KDA 状态占用 | DCP 节省了哪一部分容量？ | 模型、dtype、上下文和并发 |
-| TTFT、prefill tokens/s | 长输入和 prefix cache 是否成为瓶颈？ | 输入长度、cache hit/miss、排队条件 |
-| TPOT/ITL、输出 tokens/s | 用户生成速度和整体吞吐如何变化？ | 请求负载、输出长度、采样参数 |
-| 平均接受草稿数与每轮输出数 | 验证多出的候选是否值得？ | K、verifier、是否计入 bonus token |
-| Draft/verify、通信、状态重放耗时 | 接受率增加是否抵消额外成本？ | 后端、batch 和并行布局 |
+| 观察指标                           | 回答什么问题                    | 比较时要固定什么                    |
+| ------------------------------ | ------------------------- | --------------------------- |
+| 每 rank 的权重、目标缓存、草稿缓存和 KDA 状态占用 | DCP 节省了哪一部分容量？            | 模型、dtype、上下文和并发             |
+| TTFT、prefill tokens/s          | 长输入和 prefix cache 是否成为瓶颈？ | 输入长度、cache hit/miss、排队条件    |
+| TPOT/ITL、输出 tokens/s           | 用户生成速度和整体吞吐如何变化？          | 请求负载、输出长度、采样参数              |
+| 平均接受草稿数与每轮输出数                  | 验证多出的候选是否值得？              | K、verifier、是否计入 bonus token |
+| Draft/verify、通信、状态重放耗时         | 接受率增加是否抵消额外成本？            | 后端、batch 和并行布局              |
 
 例如 K=4 时，平均每轮输出数为 $1+\mathbb E[J]$，不等于整体加速倍数：一轮还要支付起草、目标批量验证、通信和状态管理的成本。模型卡中 K=7 的接受长度也不能直接当成本配置的结果。
 
