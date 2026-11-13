@@ -2,6 +2,15 @@
 
 大模型相关论文的阅读笔记。本仓库**同时是一个 Obsidian Vault**，用 Obsidian 打开根目录即可获得双链、图谱等体验。
 
+## 阅读入口
+
+| 论文 | 重点 | 关联概念 |
+|---|---|---|
+| [[ELF - Embedded Language Flows]] | 连续嵌入空间中的语言生成 | [[Diffusion-Language-Model]]、[[Flow-Matching]]、[[Classifier-Free-Guidance]] |
+| [[Kimi K3 - Open Frontier Intelligence]] | vLLM 推理：混合 attention、并行缓存、推测解码；另列 K3.1 实现对照 | [[MLA-TP-DP-DCP]]、[[DSpark]] |
+
+Kimi K3 笔记按问题提供入口，区分论文架构、固定版本的 vLLM 行为和工程推断。公式与实现说明独立保存在概念笔记中，引用指向论文、官方文档及源码。
+
 ## 仓库约定
 
 ### 1. 文件名全局唯一
