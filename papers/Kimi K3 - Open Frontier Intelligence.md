@@ -60,7 +60,7 @@ updated: 2026-11-12
 
 ## 3. MLA、TP、DP、DCP：哪些东西被切分？
 
-完整公式与容量算例见 [[MLA-TP-DP-DCP]]。理解 K3 时最关键的是：
+架构公式见 [[MLA]]，位置编码方式见 [[NoPE]]；并行缓存的容量算例见 [[MLA-TP-DP-DCP]]。理解 K3 时最关键的是：
 
 - **MLA 压缩的是每个历史 token 的表示。**同层同请求的各个 heads 从同一个 latent 读取信息。
 - **普通 TP 主要切分 head 相关的投影和计算。**在这里引用的实现中，latent 本身在 TP ranks 上复制；切分 heads 不等于切分 latent 历史。

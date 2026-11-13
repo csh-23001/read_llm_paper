@@ -1,8 +1,6 @@
 ---
 title: MLA、TP/DP 与 Decode Context Parallelism
 aliases:
-  - MLA
-  - Multi-head Latent Attention
   - Decode Context Parallelism
 tags:
   - llm
@@ -26,90 +24,31 @@ updated: 2026-11-12
 
 ## 1. MLA 为每个历史 token 保存什么？
 
-K3 官方论文 §2.1.2 说明：MLA 将一个 token 的 key/value 表示压缩成低维 latent，多头共享该 latent；K3 的 MLA 使用 NoPE。以下保留归一化，省略输出门控和最终输出投影，因为后两者不改变这里讨论的缓存依赖。
-
-设历史位置为 j，隐藏状态维度为 d，latent 维度为 r。压缩后的向量为：
+完整架构和投影公式见 [[MLA#2. MLA 怎样压缩 K/V？]]。本笔记沿用同一记号：$x_j\in\mathbb R^d$ 为历史特征，$r$ 为 KV latent 维度，$c_j$ 为下投影并归一化后的共享 latent。
 
 $$
-x_j\in\mathbb R^d,\qquad
-W_D^{KV}\in\mathbb R^{r\times d},\qquad
-c_j=\operatorname{Norm}\!\left(W_D^{KV}x_j\right)\in\mathbb R^r.
+c_j=\operatorname{Norm}(W_D^{KV}x_j)\in\mathbb R^r,\qquad
+C_T=[c_1\ \cdots\ c_T]^\top\in\mathbb R^{T\times r}.
 $$
 
-论文采用省略归一化的简写。这里将实际缓存的归一化后向量记为 c；实现中的量化还可能改变其存储格式。
-
-对第 h 个 attention head，有各自的 key/value 上投影矩阵：
-
-$$
-W_{UK}^{(h)}\in\mathbb R^{d_k\times r},\qquad
-W_{UV}^{(h)}\in\mathbb R^{d_v\times r}.
-$$
-
-该 head 对应的 key 和 value 为：
-
-$$
-k_j^{(h)}=W_{UK}^{(h)}c_j,\qquad
-v_j^{(h)}=W_{UV}^{(h)}c_j.
-$$
-
-关键在于：**上投影矩阵带 head 下标，缓存向量不带 head 下标。**每个 head 都从同一个 latent 向量读取信息，只是读取方式不同。
-
-因此，长度为 T 的单层 latent 历史缓存可以写成：
-
-$$
-C_T=
-\begin{bmatrix}
-c_1^\top\\
-c_2^\top\\
-\vdots\\
-c_T^\top
-\end{bmatrix}
-\in\mathbb R^{T\times r}.
-$$
-
-这里没有可按 head 拆分的维度。不同 MLA 层、不同请求各自有自己的缓存；“共享”指同一层、同一请求中的不同 heads 共享 latent。[K3 论文 §2.1.2](https://arxiv.org/abs/2607.24653v2)
+K3 的目标 MLA 采用 [[NoPE]]；这里的缓存只计 $c_j$，不计其他模型变体可能额外保存的位置分量。不同层、不同请求各有自己的 $C_T$；共享指同层同请求的 heads 共享 latent。[论文依据：K3 §2.1.2](https://arxiv.org/abs/2607.24653v2)
 
 ## 2. 解码时怎样直接利用 latent，避免保存展开后的 K/V？
 
-设当前查询位置为 t，第 h 个 head 的 query 为：
+矩阵吸收的逐步推导见 [[MLA#4. 解码时怎样直接在 latent 上计算？]]。对 key 维度为 $d_k$ 的一个 head，计算可写成：
 
 $$
-q_t^{(h)}\in\mathbb R^{d_k}.
+\widetilde q_t^{(h)}=(W_{UK}^{(h)})^\top q_t^{(h)},\qquad
+s_{tj}^{(h)}=\frac{(\widetilde q_t^{(h)})^\top c_j}{\sqrt{d_k}},\qquad
+a_{tj}^{(h)}=\operatorname{softmax}_j(s_{tj}^{(h)}),
 $$
 
-先考虑 NoPE 的普通因果 attention。将 key 上投影代入打分公式：
-
 $$
-s_{tj}^{(h)}
-=\frac{\left(q_t^{(h)}\right)^\top k_j^{(h)}}{\sqrt{d_k}}
-=\frac{\left(q_t^{(h)}\right)^\top W_{UK}^{(h)}c_j}{\sqrt{d_k}}
-=\frac{\left(\left(W_{UK}^{(h)}\right)^\top q_t^{(h)}\right)^\top c_j}{\sqrt{d_k}}.
+z_t^{(h)}=\sum_{j=1}^{t}a_{tj}^{(h)}c_j,\qquad
+o_t^{(h)}=W_{UV}^{(h)}z_t^{(h)}.
 $$
 
-定义投影到 latent 空间的 query：
-
-$$
-\widetilde q_t^{(h)}=\left(W_{UK}^{(h)}\right)^\top q_t^{(h)}\in\mathbb R^r.
-$$
-
-于是，可以直接用这个 query 与历史 latent 做内积。缩放因子仍保留原来的 key 维度：
-
-$$
-s_{tj}^{(h)}=\frac{\left(\widetilde q_t^{(h)}\right)^\top c_j}{\sqrt{d_k}},\qquad
-a_{tj}^{(h)}=\frac{\exp\!\left(s_{tj}^{(h)}\right)}{\sum_{u=1}^{t}\exp\!\left(s_{tu}^{(h)}\right)}.
-$$
-
-value 上投影也可以移到求和之后：
-
-$$
-o_t^{(h)}
-=\sum_{j=1}^{t}a_{tj}^{(h)}v_j^{(h)}
-=W_{UV}^{(h)}\left(\sum_{j=1}^{t}a_{tj}^{(h)}c_j\right).
-$$
-
-这样，在 decode 路径中不必把每个历史 token 的全部多头 K/V 都展开并长期存储。K3.1 使用 DSA 时，可将求和范围改为 indexer 选出的历史位置集合；多头共享 latent 的关系保持不变。其他采用 RoPE 的 MLA 变体还可能缓存额外位置分量，这里专门解释 K3/K3.1 目标模型的 NoPE 路径。
-
-这段重排在 [Kimi MLA 源码](https://github.com/vllm-project/vllm/blob/a9dcfae9ef0756ce076d0053429d6c9afef067a3/vllm/models/kimi_k3/nvidia/mla.py#L444)中对应吸收 key 上投影的 `W_UK_T`，以及最后的 `W_UV`。
+因此每个 head 要从历史 latent 读取完整的 $r$ 维向量，再聚合并上投影；不必长期保存展开后的多头 K/V。K3.1 使用 DSA 时，历史位置进一步限制为 indexer 选中的集合。[固定版本的 Kimi decode 路径](https://github.com/vllm-project/vllm/blob/a9dcfae9ef0756ce076d0053429d6c9afef067a3/vllm/models/kimi_k3/nvidia/mla.py#L444)对应 `W_UK_T` 和 `W_UV`。
 
 ## 3. TP 拆分 heads，为什么每张卡还需要完整缓存？
 
@@ -255,6 +194,7 @@ $$
 
 上述公式描述 NoPE MLA 的 latent 历史和理想均匀分片，不是整个模型的显存预算，也不是某套硬件上的性能测量。分页、DSA indexer、KDA recurrent state、草稿缓存、权重量化和工作区都需另计。当前笔记没有附可复现的数值实验或 GPU benchmark。
 
+- [[MLA]]、[[NoPE]]：架构公式与位置编码方式。
 - [[Kimi K3 - Open Frontier Intelligence]]：§2.1.2 使用 NoPE Gated MLA；论文中的 KDA 状态与这里的历史 latent 不是同一种缓存。
 - [[DSpark]]：K3.1 草稿模块有自己的 MLA 缓存；不能将它直接视为目标模型缓存的一部分。
 - [K3 论文](https://arxiv.org/abs/2607.24653v2)、[vLLM 上下文并行说明](https://docs.vllm.ai/en/latest/serving/context_parallel_deployment/)及上文固定版本源码：分别支持架构、通用机制与后端约束。本文后端结论固定在 `a9dcfae9ef0756ce076d0053429d6c9afef067a3`，不代表任意镜像或未来版本。
