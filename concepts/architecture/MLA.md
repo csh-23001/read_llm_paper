@@ -124,7 +124,7 @@ $$
 
 这里的普通 MHA 只是容量参照。**MLA 实际从 $X_{KV}$ 直接下投影得到 latent，不需要先生成上述完整 K/V 再压缩。**
 
-**② MLA 的 KV 下投影、归一化与各 head 上投影。**令 $W_{UK}\in\mathbb R^{Hd_k\times r}$、$W_{UV}\in\mathbb R^{Hd_v\times r}$ 为各 head 上投影矩阵沿行堆叠后的权重。
+**② MLA 的 KV 下投影、归一化与各 head 上投影**。令 $W_{UK}\in\mathbb R^{Hd_k\times r}$、$W_{UV}\in\mathbb R^{Hd_v\times r}$ 为各 head 上投影矩阵沿行堆叠后的权重。
 
 | 步骤           | 运算                                                     | 输出形状               |
 | ------------ | ------------------------------------------------------ | ------------------ |
