@@ -101,6 +101,17 @@ $$
 
 其中 $W_D^Q\in\mathbb R^{r_q\times d}$，$W_{UQ}^{(h)}\in\mathbb R^{d_k\times r_q}$，$\mathcal N_Q$ 与 KV 分支的归一化各有参数。Query 低秩投影是配套设计，节省历史 KV cache 的关键仍是式 (2) 的共享 $c_j$。
 
+**$r_q$ 与 $r$ 的作用**：它们都是低维瓶颈，但作用不同。
+
+| 维度 | 影响什么 | 在 attention 中怎样出现 |
+|---|---|---|
+| $r_q$ | Query 下投影、上投影的参数与中间表示 | 展开为 $d_k$ 维 query 后，不再作为独立轴；但 query 的值仍由这个瓶颈决定 |
+| $r$ | KV latent 的容量，以及 latent 路径的计算维度 | 在 §2.5 中，$\widetilde Q$ 和 $C$ 沿 $r$ 维做内积，$Z$ 也保留 $r$ 维，直接参与打分和聚合 |
+
+两者**可以不同**。上投影后，query/K 每 head 为 $d_k$ 维，V 每 head 为 $d_v$ 维；并不是各自直接回到 $d$。最终经过 heads 拼接与 $W_O$，attention 输出才回到 $d$ 维。升维也不等于无损恢复原始输入信息。
+
+这些维度由模型架构和权重形状共同确定；对于已有 checkpoint，不能只修改配置中的 $r_q$ 或 $r$ 而继续使用原权重。
+
 原始联合压缩和 query 压缩见 [DeepSeek-V2 §2.1.2](https://arxiv.org/html/2405.04434v5#S2.SS1.SSS2)；上述 latent 归一化对应 [Kimi MLA 实现](https://github.com/vllm-project/vllm/blob/a9dcfae9ef0756ce076d0053429d6c9afef067a3/vllm/models/kimi_k3/nvidia/mla.py#L255)。
 
 ### 2.4 完整张量形状：从输入到 attention 输出
@@ -229,7 +240,7 @@ Q [B,H,L_q,d_k] × K^T [B,H,d_k,L_k]
 
 **逐 token decode 时，缓存 C 的生命周期**：
 
-1. 新 token 到来时，用它的输入特征计算一次 $c_{\mathrm{new}}$ 并追加到本层的 $C$。历史 latent 直接复用。
+1. 每层处理本轮新 token 时，都要计算它的 query，也要在 KV 分支计算一次 $c_{\mathrm{new}}$ 并追加到本层的 $C$；普通 MHA 则计算并追加该 token 的新 K、V。历史缓存直接复用。
 2. 本轮生成当前 query，并将其投影为 $\widetilde Q$，直接与缓存的 $C$ 计算打分；不需要逐个重建全部历史的完整 K/V。
 3. 用 attention 权重将 latent 聚合成当前的 $Z$，再将 $Z$ 上投影为各 head 的输出，而不是把每个历史 $c_j$ 都先上投影成 value。
 
