@@ -24,7 +24,7 @@ updated: 2026-11-12
 
 ## 1. MLA 为每个历史 token 保存什么？
 
-完整架构和投影公式见 [[MLA#2. MLA 怎样压缩 K/V？]]。本笔记沿用同一记号：$x_j\in\mathbb R^d$ 为历史特征，$r$ 为 KV latent 维度，$c_j$ 为下投影并归一化后的共享 latent。
+完整架构和投影公式见 [[MLA#1.2 MLA 的 KV 与 Query 压缩]]。本笔记沿用同一记号：$x_j\in\mathbb R^d$ 为历史特征，$r$ 为 KV latent 维度，$c_j$ 为下投影并归一化后的共享 latent。
 
 $$
 c_j=\operatorname{Norm}(W_D^{KV}x_j)\in\mathbb R^r,\qquad
@@ -35,7 +35,7 @@ K3 的目标 MLA 采用 [[NoPE]]；这里的缓存只计 $c_j$，不计其他模
 
 ## 2. 解码时怎样直接利用 latent，避免保存展开后的 K/V？
 
-矩阵吸收的逐步推导见 [[MLA#4. 解码时怎样直接在 latent 上计算？]]。对 key 维度为 $d_k$ 的一个 head，计算可写成：
+矩阵吸收的逐步推导见 [[MLA#1.4 Latent 空间的矩阵吸收]]。对 key 维度为 $d_k$ 的一个 head，计算可写成：
 
 $$
 \widetilde q_t^{(h)}=(W_{UK}^{(h)})^\top q_t^{(h)},\qquad

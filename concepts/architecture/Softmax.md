@@ -30,7 +30,7 @@ $$
 
 ## 在哪里用到
 
-- [[MLA#3. 先按展开后的 K/V 理解完整计算]]：将 query-key 打分转成 attention 权重。
+- [[MLA#1.3 Attention 打分、聚合与输出]]：将 query-key 打分转成 attention 权重。
 - [[DSpark#3.2 加到 base logits，再做 softmax]]：沿词表维度，将 logits 转成候选 token 的采样概率。
 
 参考：[PyTorch Softmax 文档](https://docs.pytorch.org/docs/2.15/generated/torch.nn.Softmax.html)。

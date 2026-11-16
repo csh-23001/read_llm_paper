@@ -27,7 +27,7 @@ $$
 
 ## 在哪里用到
 
-- [[MLA#4.3 K3 的 Gated MLA 多了什么？]]：把门控打分变成逐通道系数，再与特征相乘；靠近 0 表示抑制，靠近 1 表示放行。输入、输出形状均为 `[B,L_q,H*d_v]`。
+- [[MLA#1.4.3 K3 的输出门控]]：把门控打分变成逐通道系数，再与特征相乘；靠近 0 表示抑制，靠近 1 表示放行。输入、输出形状均为 `[B,L_q,H*d_v]`。
 - [[DSpark#7. Confidence head 与 Markov head 的区别]]：将 confidence head 的标量打分映射到 0～1。
 
 参考：[PyTorch Sigmoid 文档](https://docs.pytorch.org/docs/2.15/generated/torch.nn.Sigmoid.html)。

@@ -15,11 +15,13 @@ arxiv: https://arxiv.org/abs/2405.04434
 
 MLA 为每个历史 token 保存一份各个 heads 共享的低维 latent，再用各 head 的投影读取其中的 key/value 信息，从而减少 KV cache。
 
-可以将它理解为 **K/V 采用共享低维表示的多头 attention**：逻辑上仍执行 query-key 打分、softmax 和 value 加权求和。它没有把整个模型的特征维度永久改成 $r$；输出仍回到模型维度 $d$，decode 还可利用矩阵吸收直接读取 latent。
+本文依次组织为完整公式、带 batch 的张量形状、具体问题答疑。公式部分独立覆盖从输入到最终输出的计算，后两部分用于对照和复习。
 
-下面先推导不带显式位置编码的 [[NoPE]] 版本，再补充 DeepSeek-V2 风格的解耦 RoPE。单 token 公式只讨论单层、单请求，向量均为列向量；§2.4–2.6 另外用批量张量展示完整形状。省略 bias、量化和并行通信。矩阵重排在实数运算下等价，不保证不同浮点 kernel 的结果逐位相同。
+## 1. 公式讲解
 
-## 1. 符号与普通多头注意力
+本部分先讲不带显式位置编码的 [[NoPE]] 路径，再补充输出门控与解耦 RoPE。单 token 公式讨论单层、单请求，向量均为列向量；符号和权重维度在本部分定义。省略 bias、量化和并行通信，矩阵重排在实数运算下等价，不保证不同浮点 kernel 的结果逐位相同。
+
+### 1.1 符号与普通多头注意力
 
 | 符号 | 含义与维度 |
 |---|---|
@@ -41,13 +43,9 @@ $$
 
 其中 $W_Q^{(h)},W_K^{(h)}\in\mathbb R^{d_k\times d}$，$W_V^{(h)}\in\mathbb R^{d_v\times d}$。长度为 $T$ 的历史需要缓存约 $TH(d_k+d_v)$ 个 K/V 元素；query 随当前计算产生，不属于通常的历史 KV cache。
 
-对普通 self-attention，**同一位置的 $x_j$ 分别乘三个不同的权重矩阵，得到该位置的 Q、K、V**。式 (1) 将当前 query 的位置写成 $t$，将可读取的历史 K/V 位置写成 $j$，是为了区分位置范围。
+### 1.2 MLA 的 KV 与 Query 压缩
 
-## 2. MLA 怎样压缩 K/V？
-
-§2.1–2.3 给出单 token 公式；包含 batch 维度的完整形状链路见 §2.4–2.6。
-
-### 2.1 一次下投影，得到共享 latent
+#### 1.2.1 一次下投影，得到共享 latent
 
 $$
 c_j=\mathcal N_{KV}\!\left(W_D^{KV}x_j\right)\in\mathbb R^r,
@@ -57,7 +55,7 @@ $$
 
 $D$ 表示 down-projection，通常 $r\ll H(d_k+d_v)$。$\mathcal N_{KV}$ 表示 latent 上的归一化：Kimi 的实现使用 [[RMSNorm]]；省略该操作的数学简写可令它为恒等映射。这里将归一化后的结果统一记为 $c_j$。
 
-### 2.2 各 head 从同一 latent 读取自己的 K/V
+#### 1.2.2 各 head 从同一 latent 读取自己的 K/V
 
 $$
 k_j^{(h)}=W_{UK}^{(h)}c_j,\qquad
@@ -90,7 +88,7 @@ $$
 
 这些展开后的 K/V 由同一个 $r$ 维向量生成。MLA 是训练时采用的参数化结构；不能直接把任意已有 MHA 的权重无损换成任意小的 $r$。
 
-### 2.3 Query 也可以先压缩
+#### 1.2.3 Query 也可以先压缩
 
 $$
 c_t^Q=\mathcal N_Q\!\left(W_D^Qx_t\right)\in\mathbb R^{r_q},
@@ -99,22 +97,184 @@ q_t^{(h)}=W_{UQ}^{(h)}c_t^Q,
 \tag{5}
 $$
 
-其中 $W_D^Q\in\mathbb R^{r_q\times d}$，$W_{UQ}^{(h)}\in\mathbb R^{d_k\times r_q}$，$\mathcal N_Q$ 与 KV 分支的归一化各有参数。Query 低秩投影是配套设计，节省历史 KV cache 的关键仍是式 (2) 的共享 $c_j$。
-
-**$r_q$ 与 $r$ 的作用**：它们都是低维瓶颈，但作用不同。
-
-| 维度 | 影响什么 | 在 attention 中怎样出现 |
-|---|---|---|
-| $r_q$ | Query 下投影、上投影的参数与中间表示 | 展开为 $d_k$ 维 query 后，不再作为独立轴；但 query 的值仍由这个瓶颈决定 |
-| $r$ | KV latent 的容量，以及 latent 路径的计算维度 | 在 §2.5 中，$\widetilde Q$ 和 $C$ 沿 $r$ 维做内积，$Z$ 也保留 $r$ 维，直接参与打分和聚合 |
-
-两者**可以不同**。上投影后，query/K 每 head 为 $d_k$ 维，V 每 head 为 $d_v$ 维；并不是各自直接回到 $d$。最终经过 heads 拼接与 $W_O$，attention 输出才回到 $d$ 维。升维也不等于无损恢复原始输入信息。
-
-这些维度由模型架构和权重形状共同确定；对于已有 checkpoint，不能只修改配置中的 $r_q$ 或 $r$ 而继续使用原权重。
+其中 $W_D^Q\in\mathbb R^{r_q\times d}$，$W_{UQ}^{(h)}\in\mathbb R^{d_k\times r_q}$，$\mathcal N_Q$ 与 KV 分支的归一化各有参数。Query 低秩投影是配套设计，节省历史 KV cache 的关键仍是式 (2) 的共享 $c_j$。$r_q$ 与 $r$ 可以不同；上投影后的 query/K 每 head 为 $d_k$ 维，value 每 head 为 $d_v$ 维。
 
 原始联合压缩和 query 压缩见 [DeepSeek-V2 §2.1.2](https://arxiv.org/html/2405.04434v5#S2.SS1.SSS2)；上述 latent 归一化对应 [Kimi MLA 实现](https://github.com/vllm-project/vllm/blob/a9dcfae9ef0756ce076d0053429d6c9afef067a3/vllm/models/kimi_k3/nvidia/mla.py#L255)。
 
-### 2.4 完整张量形状：从输入到 attention 输出
+### 1.3 Attention 打分、聚合与输出
+
+因果 attention 只读取 $j\le t$ 的位置。每个 head 先计算打分，再沿历史位置用 [[Softmax]] 归一化为权重：
+
+$$
+s_{tj}^{(h)}=
+\frac{(q_t^{(h)})^\top k_j^{(h)}}{\sqrt{d_k}},
+\qquad
+a_{tj}^{(h)}=
+\frac{\exp(s_{tj}^{(h)})}{\sum_{u=1}^{t}\exp(s_{tu}^{(h)})}.
+\tag{6}
+$$
+
+然后用权重聚合 value，将各 heads 的输出拼接并投影回模型维度：
+
+$$
+o_t^{(h)}=\sum_{j=1}^{t}a_{tj}^{(h)}v_j^{(h)},
+\qquad
+y_t=W_O
+\begin{bmatrix}o_t^{(1)}\\ \vdots\\ o_t^{(H)}\end{bmatrix},
+\quad W_O\in\mathbb R^{d\times Hd_v}.
+\tag{7}
+$$
+
+此时 MLA 仍有各 head 独立的打分和 softmax；压缩的是历史表示，并没有把所有 heads 的 attention 权重变成同一份。
+
+### 1.4 Latent 空间的矩阵吸收
+
+#### 1.4.1 把 key 上投影移到 query 一侧
+
+将式 (3) 代入式 (6)：
+
+$$
+\begin{aligned}
+(q_t^{(h)})^\top k_j^{(h)}
+&=(q_t^{(h)})^\top W_{UK}^{(h)}c_j\\
+&=\left((W_{UK}^{(h)})^\top q_t^{(h)}\right)^\top c_j.
+\end{aligned}
+\tag{8}
+$$
+
+定义 latent 空间的 query：
+
+$$
+\widetilde q_t^{(h)}=(W_{UK}^{(h)})^\top q_t^{(h)}\in\mathbb R^r.
+\tag{9}
+$$
+
+于是历史 key 不必逐个展开，打分直接写为：
+
+$$
+s_{tj}^{(h)}=
+\frac{(\widetilde q_t^{(h)})^\top c_j}{\sqrt{d_k}}.
+\tag{10}
+$$
+
+**分母仍是 $\sqrt{d_k}$，不能因为内积改在 $r$ 维空间计算就改成 $\sqrt r$**。这是对同一标量的代数重排，原来的缩放不变。
+
+若 query 采用式 (5)，还可以预先组合两份线性上投影：
+
+$$
+\widetilde q_t^{(h)}=
+\underbrace{(W_{UK}^{(h)})^\top W_{UQ}^{(h)}}_{\in\mathbb R^{r\times r_q}}
+c_t^Q.
+\tag{11}
+$$
+
+归一化仍先作用于下投影结果，不能把跨越 RMSNorm 的全部操作当成一个固定线性矩阵。式 (11) 是可用的代数合并；具体 kernel 不一定把它物化成一份新权重。
+
+#### 1.4.2 把 value 上投影移到加权求和之后
+
+$$
+\begin{aligned}
+o_t^{(h)}
+&=\sum_{j=1}^{t}a_{tj}^{(h)}W_{UV}^{(h)}c_j\\
+&=W_{UV}^{(h)}\left(\sum_{j=1}^{t}a_{tj}^{(h)}c_j\right).
+\end{aligned}
+\tag{12}
+$$
+
+令 $z_t^{(h)}=\sum_j a_{tj}^{(h)}c_j\in\mathbb R^r$，就只需先聚合 latent，再计算 $o_t^{(h)}=W_{UV}^{(h)}z_t^{(h)}$。历史 value 也不必逐个展开。
+
+进一步记 $W_O=[W_O^{(1)}\ \cdots\ W_O^{(H)}]$，每块 $W_O^{(h)}\in\mathbb R^{d\times d_v}$。**没有额外输出门控时**，式 (7) 可写成：
+
+$$
+y_t=\sum_{h=1}^{H}
+\underbrace{W_O^{(h)}W_{UV}^{(h)}}_{\in\mathbb R^{d\times r}}
+z_t^{(h)}.
+\tag{13}
+$$
+
+这就是上投影可“吸收”到 query/output 投影中的含义；不是把模型的 head 数改成了 1。[固定版本的 Kimi decode 路径](https://github.com/vllm-project/vllm/blob/a9dcfae9ef0756ce076d0053429d6c9afef067a3/vllm/models/kimi_k3/nvidia/mla.py#L444)预拆出 `W_UK_T`、`W_UV`，分别执行 query 向 latent 的投影和聚合后的 value 上投影。
+
+#### 1.4.3 K3 的输出门控
+
+记 $u_t=[o_t^{(1)};\ldots;o_t^{(H)}]\in\mathbb R^{Hd_v}$。K3 在输出投影前增加逐通道门控，用 [[Sigmoid]] 将各通道的门控打分独立映射到 0～1：
+
+$$
+g_t=\operatorname{sigmoid}(W_gx_t),\qquad
+y_t=W_O(g_t\odot u_t),
+\quad W_g\in\mathbb R^{Hd_v\times d}.
+\tag{14}
+$$
+
+门控依赖当前 token。式 (12) 的 value 聚合重排仍成立，但式 (13) 中 $W_O^{(h)}W_{UV}^{(h)}$ 的固定合并不再直接适用：两者之间插入了随 $t$ 变化的门控。该设计见 [K3 §2.1.2](https://arxiv.org/abs/2607.24653v2)。
+
+### 1.5 解耦 RoPE 的公式
+
+上述推导是 [[NoPE]] 路径。以 DeepSeek-V2 的解耦 RoPE 为例，额外设位置分量维度为偶数 $d_R$，其旋转矩阵为 $R_p\in\mathbb R^{d_R\times d_R}$。内容分量仍按前文计算，位置分量单独计算：
+
+$$
+q_t^{R,(h)}=R_tW_{QR}^{(h)}c_t^Q,\qquad
+k_j^R=R_jW_{KR}x_j,
+\tag{15}
+$$
+
+其中 $W_{QR}^{(h)}\in\mathbb R^{d_R\times r_q}$，$W_{KR}\in\mathbb R^{d_R\times d}$。位置 query 按 head 区分，位置 key 则在各 heads 间共享。
+
+拼接后的 query/key 为 $[q_t^{(h)};q_t^{R,(h)}]$、$[k_j^{(h)};k_j^R]$，内积等于两个分支内积之和：
+
+$$
+s_{tj}^{(h)}=
+\frac{
+(\widetilde q_t^{(h)})^\top c_j
++(q_t^{R,(h)})^\top k_j^R
+}{\sqrt{d_k+d_R}}.
+\tag{16}
+$$
+
+Softmax 与 value 聚合沿用式 (6)、(12)，但使用式 (16) 的新打分。历史需缓存 **$(c_j,k_j^R)$**：内容分支保留矩阵吸收，位置分支另算。
+
+为什么不直接对展开的内容 key 做 RoPE？若内容空间中的旋转为 $P_p\in\mathbb R^{d_k\times d_k}$，则：
+
+$$
+(P_tq_t^{(h)})^\top P_jW_{UK}^{(h)}c_j
+=\left((W_{UK}^{(h)})^\top P_j^\top P_tq_t^{(h)}\right)^\top c_j.
+\tag{17}
+$$
+
+右侧的“latent query”随历史位置 $j$ 改变，通常无法再用式 (9) 那样的一份 query 给全部历史打分。这正是解耦位置分支解决的问题。公式对应 [DeepSeek-V2 §2.1.3 与 Appendix C](https://arxiv.org/html/2405.04434v5#S2.SS1.SSS3)。
+
+### 1.6 缓存容量
+
+长度为 $T$ 时，NoPE MLA 的历史 latent 可写成矩阵；本轮只追加新位置对应的行：
+
+$$
+C_T=
+\begin{bmatrix}
+c_1^\top\\ \vdots\\ c_T^\top
+\end{bmatrix}
+\in\mathbb R^{T\times r},
+\qquad
+C_{T+1}=
+\begin{bmatrix}
+C_T\\ c_{T+1}^\top
+\end{bmatrix}.
+\tag{18}
+$$
+
+以下只计单层、长度 $T$ 的历史缓存元素数，不计 TP 复制、页填充、量化元数据和额外状态：
+
+| 路径            | 每 token 保存什么      | 历史缓存元素数       |
+| ------------- | ----------------- | ------------- |
+| 普通 MHA        | 各 head 的 K/V      | $TH(d_k+d_v)$ |
+| NoPE MLA      | 共享 latent $c_j$   | $Tr$          |
+| 上述解耦 RoPE MLA | 共享 latent 和位置 key | $T(r+d_R)$    |
+
+相同存储精度下，NoPE MLA 相对该 MHA 基线的容量比例为 $r/[H(d_k+d_v)]$；元素数乘每元素字节数才得到存储字节数。压缩后的历史仍随 $T$ 增长，MLA 不是把全部历史合成一份固定大小状态。
+
+## 2. 张量形状讲解
+
+本部分将前面的公式写成含 batch 的逻辑张量，逐步对照投影、attention 与输出的形状。
+
+### 2.1 从输入到 attention 输出
 
 先看 **NoPE、展开 K/V 的计算视角**。这里采用最后一维为特征的行布局，因此单 token 的 $Wx$ 在批量形式下写成 $XW^\top$；它与前文列向量公式等价。
 
@@ -124,8 +284,6 @@ $$
 - $r,r_q$：KV、query 的压缩维度。**不要求 $d=Hd_k=Hd_v$，也不要求 $L_q=L_k$**。
 
 输入记作 $X_Q\in\mathbb R^{B\times L_q\times d}$ 和 $X_{KV}\in\mathbb R^{B\times L_k\times d}$。$X_{KV}$ 是历史特征堆叠的数学视图；decode 实际复用已缓存的 latent，只为新位置追加投影结果，不重新投影全部历史。
-
-这里的 $X_Q$、$X_{KV}$ 都来自同一层的输入特征，只是覆盖的位置范围不同：前者包含本轮需要计算 query 的位置，后者还包括已经缓存的历史位置。
 
 **① 压缩前的参照：普通 MHA 的 K/V 有多大？**
 
@@ -221,9 +379,9 @@ Q [B,H,L_q,d_k] × K^T [B,H,d_k,L_k]
 → output projection [B,L_q,d]
 ```
 
-### 2.5 不展开历史 K/V 时，形状怎样变化？
+### 2.2 不展开历史 K/V 的 latent 路径
 
-§4 推导了矩阵吸收；这里直接列出形状。令 $\mathcal W_K$ 为各 head 的 $W_{UK}^{(h)}$ 堆叠，形状 `[H, d_k, r]`；$\mathcal W_V$ 为各 head 的 $(W_{UV}^{(h)})^\top$ 堆叠，形状 `[H, r, d_v]`。
+§1.4 推导了矩阵吸收；这里直接列出形状。令 $\mathcal W_K$ 为各 head 的 $W_{UK}^{(h)}$ 堆叠，形状 `[H, d_k, r]`；$\mathcal W_V$ 为各 head 的 $(W_{UV}^{(h)})^\top$ 堆叠，形状 `[H, r, d_v]`。
 
 | 步骤                 | 运算及形状变化                                                    | 输出形状            |
 | ------------------ | ---------------------------------------------------------- | --------------- |
@@ -231,22 +389,14 @@ Q [B,H,L_q,d_k] × K^T [B,H,d_k,L_k]
 | 给缓存增加可广播的 head 轴   | $C_H=C[:,\mathrm{None},:,:]$，由 `[B,L_k,r]` 增加长度为 1 的轴      | `[B,1,L_k,r]`   |
 | 缓存最后两轴转置           | $C_H^\top$，仅交换最后两个轴                                        | `[B,1,r,L_k]`   |
 | 直接对 latent 打分      | $\widetilde Q C_H^\top$：`[B,H,L_q,r]` @ `[B,1,r,L_k]`      | `[B,H,L_q,L_k]` |
-| 缩放、mask、softmax    | 仍除以 $\sqrt{d_k}$，使用与 §2.4 相同的 mask 和 softmax 轴，得到 $A$      | `[B,H,L_q,L_k]` |
+| 缩放、mask、softmax    | 仍除以 $\sqrt{d_k}$，使用与 §2.1 相同的 mask 和 softmax 轴，得到 $A$      | `[B,H,L_q,L_k]` |
 | 聚合 latent          | $Z=AC_H$：`[B,H,L_q,L_k]` @ `[B,1,L_k,r]`                   | `[B,H,L_q,r]`   |
 | 将聚合结果上投影为 value 输出 | $O=Z\mathcal W_V$：`[B,H,L_q,r]` @ `[H,r,d_v]`              | `[B,H,L_q,d_v]` |
-| 合并 heads、门控、输出投影   | 与 §2.4 的步骤 ⑤ 相同                                            | `[B,L_q,d]`     |
+| 合并 heads、门控、输出投影   | 与 §2.1 的步骤 ⑤ 相同                                            | `[B,L_q,d]`     |
 
 `[B,1,L_k,r]` 的 head 轴按计算需要广播到 $H$；**广播不意味着必须存下 $H$ 份 latent**。这条路径保留相同形状的 attention 权重，但用共享 latent 代替展开后的历史 K/V。
 
-**逐 token decode 时，缓存 C 的生命周期**：
-
-1. 每层处理本轮新 token 时，都要计算它的 query，也要在 KV 分支计算一次 $c_{\mathrm{new}}$ 并追加到本层的 $C$；普通 MHA 则计算并追加该 token 的新 K、V。历史缓存直接复用。
-2. 本轮生成当前 query，并将其投影为 $\widetilde Q$，直接与缓存的 $C$ 计算打分；不需要逐个重建全部历史的完整 K/V。
-3. 用 attention 权重将 latent 聚合成当前的 $Z$，再将 $Z$ 上投影为各 head 的输出，而不是把每个历史 $c_j$ 都先上投影成 value。
-
-因此每轮仍有 query 投影和聚合结果的 value 上投影，也仍要读取相关历史；**复用 C 不等于每轮展开一遍全部历史 K/V**。如果选择 §2.4 的展开计算路径，则可以临时重建 K/V，长期缓存与临时计算要分别看。
-
-### 2.6 Prefill、decode 与 RoPE 的形状对照
+### 2.3 Prefill 与 decode 的形状对照
 
 设进入本轮前已有 $T$ 个 token 的缓存，本轮处理 $m$ 个新位置。在这里的因果 self-attention 约定下：
 
@@ -254,15 +404,6 @@ $$
 L_q=m,\qquad L_k=T+m,\qquad
 X_Q\in\mathbb R^{B\times m\times d}.
 $$
-
-| 场景 | 本轮 query 位置数 | $X_Q$ 的形状 |
-|---|---|---|
-| 普通逐 token 自回归 decode | $m=1$ | `[B,1,d]` |
-| 初始提示词 prefill | $m$ 为本轮处理的提示词 token 数 | `[B,m,d]` |
-| 追加输入或分块 prefill | $m$ 为本轮新增输入或当前分块的 token 数 | `[B,m,d]` |
-| 推测解码中的目标验证 | 可一次验证多个候选；按本文 DSpark 对齐，anchor 加 $K$ 个候选时 $m=K+1$ | `[B,K+1,d]` |
-
-所以 $L_q>1$ 不仅出现在用户提供多 token 输入时，也出现在多候选验证时。**Batch 中的请求数与每个请求的 query 数是不同的轴**：例如 16 个请求各做一步普通 decode，输入是 `[16,1,d]`，不是把 $L_q$ 写成 16。
 
 下面取一组**假设尺寸**：$B=2,d=16,H=2,d_k=4,d_v=6,r=3,r_q=5$。先 prefill 3 个 token，再 decode 1 个新 token：
 
@@ -283,7 +424,9 @@ $$
 
 这里 prefill 的 $L_k$ 与 $r$ 恰好都等于 3，所以 $A$、$\widetilde Q$ 和 $Z$ 的数组尺寸相同，**轴的含义仍不同**：$A$ 最后一轴是历史位置，后两者最后一轴是 latent 特征。
 
-若使用 §5 的解耦 RoPE，令 $d_R$ 为额外的位置特征维度，内容分支沿用上面的形状；位置分支及其合并方式为：
+### 2.4 解耦 RoPE 的张量形状
+
+若使用 §1.5 的解耦 RoPE，令 $d_R$ 为额外的位置特征维度，内容分支沿用上面的形状；位置分支及其合并方式为：
 
 | 步骤                          | 形状变化                                                                   |
 | --------------------------- | ---------------------------------------------------------------------- |
@@ -296,170 +439,77 @@ $$
 | 拼接内容与位置 key                 | `[B,H,L_k,d_k]` + 广播的位置 key → `[B,H,L_k,d_k+d_R]`                      |
 | 拼接后的 QK 打分                  | `[B,H,L_q,d_k+d_R]` @ `[B,H,d_k+d_R,L_k]` → `[B,H,L_q,L_k]`            |
 | 缩放、mask、softmax             | 改用 $\sqrt{d_k+d_R}$；权重形状仍为 `[B,H,L_q,L_k]`                             |
-| Value 聚合到最终输出               | V 维度仍是 $d_v$；后续形状与 §2.4、§2.5 相同                                        |
+| Value 聚合到最终输出               | V 维度仍是 $d_v$；后续形状与 §2.1、§2.2 相同                                        |
 
 表里的 `+` 表示沿最后一轴拼接，不是逐元素相加。Latent 路径则分别计算内容打分与位置打分，二者都是 `[B,H,L_q,L_k]`，相加后再缩放、加 mask、softmax；不必实际拼接完整历史 key。其逻辑缓存由 `[B,L_k,r]` 的 $C$ 和 `[B,L_k,d_R]` 的位置 key 组成。
 
 以上是等长请求的逻辑张量布局；vLLM 可采用打包 token、分页缓存和专用 kernel 布局，不能将这些形状直接视为其物理显存排列。
 
-## 3. 先按展开后的 K/V 理解完整计算
+## 3. 具体问题答疑
 
-因果 attention 只读取 $j\le t$ 的位置。每个 head 先计算打分，再沿历史位置用 [[Softmax]] 归一化为权重：
+### 3.1 MLA 就是先降维，再做 MHA 吗？
 
-$$
-s_{tj}^{(h)}=
-\frac{(q_t^{(h)})^\top k_j^{(h)}}{\sqrt{d_k}},
-\qquad
-a_{tj}^{(h)}=
-\frac{\exp(s_{tj}^{(h)})}{\sum_{u=1}^{t}\exp(s_{tu}^{(h)})}.
-\tag{6}
-$$
+可以将它理解为 **K/V 采用共享低维表示的多头 attention**：逻辑上仍执行 query-key 打分、softmax 和 value 加权求和。它没有把整个模型的特征维度永久改成 $r$；输出仍回到模型维度 $d$，decode 还可利用矩阵吸收直接读取 latent。
 
-然后用权重聚合 value，将各 heads 的输出拼接并投影回模型维度：
+### 3.2 普通 MHA 的 Q、K、V 来自同一个 X 吗？
 
-$$
-o_t^{(h)}=\sum_{j=1}^{t}a_{tj}^{(h)}v_j^{(h)},
-\qquad
-y_t=W_O
-\begin{bmatrix}o_t^{(1)}\\ \vdots\\ o_t^{(H)}\end{bmatrix},
-\quad W_O\in\mathbb R^{d\times Hd_v}.
-\tag{7}
-$$
+对普通 self-attention，**同一位置的 $x_j$ 分别乘三个不同的权重矩阵，得到该位置的 Q、K、V**。式 (1) 将当前 query 的位置写成 $t$，将可读取的历史 K/V 位置写成 $j$，是为了区分位置范围。
 
-此时 MLA 仍有各 head 独立的打分和 softmax；压缩的是历史表示，并没有把所有 heads 的 attention 权重变成同一份。
+这里的 $X_Q$、$X_{KV}$ 都来自同一层的输入特征，只是覆盖的位置范围不同：前者包含本轮需要计算 query 的位置，后者还包括已经缓存的历史位置。
 
-## 4. 解码时怎样直接在 latent 上计算？
+### 3.3 先投影再拆 heads，与先拆 heads 再投影一样吗？
 
-### 4.1 把 key 上投影移到 query 一侧
+要区分切分的是权重还是输入。把总投影矩阵按输出行切成 $H$ 块，每块形状为 $[d_k,d]$，每个 head 仍读取完整的 $d$ 维输入，这与整体投影后拆分输出等价。
 
-将式 (3) 代入式 (6)：
+如果先把输入的 $d$ 维特征切成 $H$ 份，每个 head 只读取 $d/H$ 维，再用 $[d_k,d/H]$ 的矩阵投影，通常就不等价了。
 
-$$
-\begin{aligned}
-(q_t^{(h)})^\top k_j^{(h)}
-&=(q_t^{(h)})^\top W_{UK}^{(h)}c_j\\
-&=\left((W_{UK}^{(h)})^\top q_t^{(h)}\right)^\top c_j.
-\end{aligned}
-\tag{8}
-$$
+### 3.4 r_q 和 r 都只是降维参数吗？可以不同吗？
 
-定义 latent 空间的 query：
+两者可以不同，但作用不同；不能据此认为它们不参与 attention 的计算。
 
-$$
-\widetilde q_t^{(h)}=(W_{UK}^{(h)})^\top q_t^{(h)}\in\mathbb R^r.
-\tag{9}
-$$
+| 维度 | 影响什么 | 在 attention 中怎样出现 |
+|---|---|---|
+| $r_q$ | Query 下投影、上投影的参数与中间表示 | 展开为 $d_k$ 维 query 后，不再作为独立轴；但 query 的值仍由这个瓶颈决定 |
+| $r$ | KV latent 的容量，以及 latent 路径的计算维度 | 在 §2.2 中，$\widetilde Q$ 和 $C$ 沿 $r$ 维做内积，$Z$ 也保留 $r$ 维，直接参与打分和聚合 |
 
-于是历史 key 不必逐个展开，打分直接写为：
+这些维度由模型架构和权重形状共同确定；对于已有 checkpoint，不能只修改配置中的 $r_q$ 或 $r$ 而继续使用原权重。
 
-$$
-s_{tj}^{(h)}=
-\frac{(\widetilde q_t^{(h)})^\top c_j}{\sqrt{d_k}}.
-\tag{10}
-$$
+### 3.5 上投影后会直接回到 d 维吗？能无损恢复吗？
 
-**分母仍是 $\sqrt{d_k}$，不能因为内积改在 $r$ 维空间计算就改成 $\sqrt r$**。这是对同一标量的代数重排，原来的缩放不变。
+上投影后，query/K 每 head 为 $d_k$ 维，V 每 head 为 $d_v$ 维；并不是各自直接回到 $d$。最终经过 heads 拼接与 $W_O$，attention 输出才回到 $d$ 维。升维也不等于无损恢复原始输入信息。
 
-若 query 采用式 (5)，还可以预先组合两份线性上投影：
+### 3.6 缓存 C 后，新 token 还要算 KV 吗？每轮要重建历史 K/V 吗？
 
-$$
-\widetilde q_t^{(h)}=
-\underbrace{(W_{UK}^{(h)})^\top W_{UQ}^{(h)}}_{\in\mathbb R^{r\times r_q}}
-c_t^Q.
-\tag{11}
-$$
+1. 每层处理本轮新 token 时，都要计算它的 query，也要在 KV 分支计算一次 $c_{\mathrm{new}}$ 并追加到本层的 $C$；普通 MHA 则计算并追加该 token 的新 K、V。历史缓存直接复用。
+2. 将本轮 query 投影为 $\widetilde Q$，直接与缓存的 $C$ 计算打分；不需要逐个重建全部历史的完整 K/V。
+3. 用 attention 权重将 latent 聚合成当前的 $Z$，再将 $Z$ 上投影为各 head 的输出，而不是把每个历史 $c_j$ 都先上投影成 value。
 
-归一化仍先作用于下投影结果，不能把跨越 RMSNorm 的全部操作当成一个固定线性矩阵。式 (11) 是可用的代数合并；具体 kernel 不一定把它物化成一份新权重。
-
-### 4.2 把 value 上投影移到加权求和之后
-
-$$
-\begin{aligned}
-o_t^{(h)}
-&=\sum_{j=1}^{t}a_{tj}^{(h)}W_{UV}^{(h)}c_j\\
-&=W_{UV}^{(h)}\left(\sum_{j=1}^{t}a_{tj}^{(h)}c_j\right).
-\end{aligned}
-\tag{12}
-$$
-
-令 $z_t^{(h)}=\sum_j a_{tj}^{(h)}c_j\in\mathbb R^r$，就只需先聚合 latent，再计算 $o_t^{(h)}=W_{UV}^{(h)}z_t^{(h)}$。历史 value 也不必逐个展开。
-
-进一步记 $W_O=[W_O^{(1)}\ \cdots\ W_O^{(H)}]$，每块 $W_O^{(h)}\in\mathbb R^{d\times d_v}$。**没有额外输出门控时**，式 (7) 可写成：
-
-$$
-y_t=\sum_{h=1}^{H}
-\underbrace{W_O^{(h)}W_{UV}^{(h)}}_{\in\mathbb R^{d\times r}}
-z_t^{(h)}.
-\tag{13}
-$$
-
-这就是上投影可“吸收”到 query/output 投影中的含义；不是把模型的 head 数改成了 1。[固定版本的 Kimi decode 路径](https://github.com/vllm-project/vllm/blob/a9dcfae9ef0756ce076d0053429d6c9afef067a3/vllm/models/kimi_k3/nvidia/mla.py#L444)预拆出 `W_UK_T`、`W_UV`，分别执行 query 向 latent 的投影和聚合后的 value 上投影。
-
-### 4.3 K3 的 Gated MLA 多了什么？
-
-记 $u_t=[o_t^{(1)};\ldots;o_t^{(H)}]\in\mathbb R^{Hd_v}$。K3 在输出投影前增加逐通道门控，用 [[Sigmoid]] 将各通道的门控打分独立映射到 0～1：
-
-$$
-g_t=\operatorname{sigmoid}(W_gx_t),\qquad
-y_t=W_O(g_t\odot u_t),
-\quad W_g\in\mathbb R^{Hd_v\times d}.
-\tag{14}
-$$
-
-门控依赖当前 token。式 (12) 的 value 聚合重排仍成立，但式 (13) 中 $W_O^{(h)}W_{UV}^{(h)}$ 的固定合并不再直接适用：两者之间插入了随 $t$ 变化的门控。该设计见 [K3 §2.1.2](https://arxiv.org/abs/2607.24653v2)。
-
-## 5. 带 RoPE 的 MLA 为什么还缓存一个位置分量？
-
-上述推导是 [[NoPE]] 路径。以 DeepSeek-V2 的解耦 RoPE 为例，额外设位置分量维度为偶数 $d_R$，其旋转矩阵为 $R_p\in\mathbb R^{d_R\times d_R}$。内容分量仍按前文计算，位置分量单独计算：
-
-$$
-q_t^{R,(h)}=R_tW_{QR}^{(h)}c_t^Q,\qquad
-k_j^R=R_jW_{KR}x_j,
-\tag{15}
-$$
-
-其中 $W_{QR}^{(h)}\in\mathbb R^{d_R\times r_q}$，$W_{KR}\in\mathbb R^{d_R\times d}$。位置 query 按 head 区分，位置 key 则在各 heads 间共享。
-
-拼接后的 query/key 为 $[q_t^{(h)};q_t^{R,(h)}]$、$[k_j^{(h)};k_j^R]$，内积等于两个分支内积之和：
-
-$$
-s_{tj}^{(h)}=
-\frac{
-(\widetilde q_t^{(h)})^\top c_j
-+(q_t^{R,(h)})^\top k_j^R
-}{\sqrt{d_k+d_R}}.
-\tag{16}
-$$
-
-Softmax 与 value 聚合沿用式 (6)、(12)，但使用式 (16) 的新打分。历史需缓存 **$(c_j,k_j^R)$**：内容分支保留矩阵吸收，位置分支另算。
-
-为什么不直接对展开的内容 key 做 RoPE？若内容空间中的旋转为 $P_p\in\mathbb R^{d_k\times d_k}$，则：
-
-$$
-(P_tq_t^{(h)})^\top P_jW_{UK}^{(h)}c_j
-=\left((W_{UK}^{(h)})^\top P_j^\top P_tq_t^{(h)}\right)^\top c_j.
-\tag{17}
-$$
-
-右侧的“latent query”随历史位置 $j$ 改变，通常无法再用式 (9) 那样的一份 query 给全部历史打分。这正是解耦位置分支解决的问题。公式对应 [DeepSeek-V2 §2.1.3 与 Appendix C](https://arxiv.org/html/2405.04434v5#S2.SS1.SSS3)。
-
-**MLA 不要求必须使用 NoPE**。K3 目标 MLA 采用 NoPE；K3.1 的 DSpark 草稿模型卡则声明 causal MLA 与 YaRN，不能直接套用目标模型的位置编码设置。具体变体见 [[DSpark]]。
-
-## 6. 缓存到底省在哪里？
-
-以下只计单层、长度 $T$ 的历史缓存元素数，不计 TP 复制、页填充、量化元数据和额外状态：
-
-| 路径            | 每 token 保存什么      | 历史缓存元素数       |
-| ------------- | ----------------- | ------------- |
-| 普通 MHA        | 各 head 的 K/V      | $TH(d_k+d_v)$ |
-| NoPE MLA      | 共享 latent $c_j$   | $Tr$          |
-| 上述解耦 RoPE MLA | 共享 latent 和位置 key | $T(r+d_R)$    |
-
-相同存储精度下，NoPE MLA 相对该 MHA 基线的容量比例为 $r/[H(d_k+d_v)]$；元素数乘每元素字节数才得到存储字节数。压缩后的历史仍随 $T$ 增长，MLA 不是把全部历史合成一份固定大小状态。
+因此每轮仍有 query 投影和聚合结果的 value 上投影，也仍要读取相关历史；**复用 C 不等于每轮展开一遍全部历史 K/V**。如果选择 §2.1 的展开计算路径，则可以临时重建 K/V，长期缓存与临时计算要分别看。
 
 Prefill 可以为高吞吐临时展开 K/V，decode 可以直接读取 latent；**长期缓存格式与一次 kernel 的临时张量要分别看**。TP 是否复制这份缓存、DCP 怎样分片，见 [[MLA-TP-DP-DCP]]。
 
-## 7. 在哪里用到
+### 3.7 L_q 是不是比 L_k 大 1？
+
+不是。按本文的因果 self-attention 约定，已有 $T$ 个位置的缓存、本轮处理 $m$ 个新位置时，$L_q=m$、$L_k=T+m$。普通逐 token decode 中，$L_q=1$、$L_k=T+1$。
+
+例如已有 3 个位置的缓存，本轮就是 $L_q=1,L_k=4$。增加的 1 是 $L_k$ 相对旧缓存长度增加了 1。
+
+### 3.8 X_Q 通常只包含一个 token 吗？什么时候大于 1？
+
+| 场景 | 本轮 query 位置数 | $X_Q$ 的形状 |
+|---|---|---|
+| 普通逐 token 自回归 decode | $m=1$ | `[B,1,d]` |
+| 初始提示词 prefill | $m$ 为本轮处理的提示词 token 数 | `[B,m,d]` |
+| 追加输入或分块 prefill | $m$ 为本轮新增输入或当前分块的 token 数 | `[B,m,d]` |
+| 推测解码中的目标验证 | 可一次验证多个候选；按本文 DSpark 对齐，anchor 加 $K$ 个候选时 $m=K+1$ | `[B,K+1,d]` |
+
+所以 $L_q>1$ 不仅出现在用户提供多 token 输入时，也出现在多候选验证时。**Batch 中的请求数与每个请求的 query 数是不同的轴**：例如 16 个请求各做一步普通 decode，输入是 `[16,1,d]`，不是把 $L_q$ 写成 16。
+
+### 3.9 MLA 必须使用 NoPE 吗？目标与草稿的设置相同吗？
+
+**MLA 不要求必须使用 NoPE**。K3 目标 MLA 采用 NoPE；K3.1 的 DSpark 草稿模型卡则声明 causal MLA 与 YaRN，不能直接套用目标模型的位置编码设置。具体变体见 [[DSpark]]。
+
+### 3.10 哪些论文和组件与这里有关？
 
 - [[Kimi K3 - Open Frontier Intelligence]]：NoPE Gated MLA，与 KDA 交错使用。
 - [[DSpark#2.1 目标特征不是“再跑一次完整目标模型”]]：$f_j$ 是草稿 context 分支的输入；各草稿层再用自己的投影生成 latent，不能把 $f_j$ 本身当成全部层共享的 MLA cache。

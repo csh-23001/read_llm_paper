@@ -37,4 +37,4 @@ Mask 限制哪些 token 可见；它与给特征添加位置编码的作用不�
 
 例如 [[Kimi K3 - Open Frontier Intelligence]] 的 MLA 不在 query/key 上加显式位置编码，但交错的 KDA 通过递归门控与衰减处理序列顺序。这是 K3 的架构配合，不意味着任意模型删除 RoPE 后都能保持原有能力。依据：[K3 §2.1.2、§3.4](https://arxiv.org/abs/2607.24653v2)。
 
-与带解耦 RoPE 的 MLA 对照，见 [[MLA#5. 带 RoPE 的 MLA 为什么还缓存一个位置分量？]]。
+与带解耦 RoPE 的 MLA 对照，见 [[MLA#1.5 解耦 RoPE 的公式]]。
