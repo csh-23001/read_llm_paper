@@ -106,7 +106,7 @@ $$
 - $B$：batch 中的请求数。
 - $L_q$：本轮 query 位置数；$L_k$：可以读取的全部历史与当前 K/V 位置数。
 - $d$：模型特征维度；$H$：head 数；$d_k,d_v$：每 head 的 key/query、value 维度。
-- $r,r_q$：KV、query 的压缩维度。**不要求 $d=Hd_k=Hd_v$，也不要求 $L_q=L_k$。**
+- $r,r_q$：KV、query 的压缩维度。**不要求 $d=Hd_k=Hd_v$，也不要求 $L_q=L_k$**。
 
 输入记作 $X_Q\in\mathbb R^{B\times L_q\times d}$ 和 $X_{KV}\in\mathbb R^{B\times L_k\times d}$。$X_{KV}$ 是历史特征堆叠的数学视图；decode 实际复用已缓存的 latent，只为新位置追加投影结果，不重新投影全部历史。
 
@@ -122,7 +122,7 @@ $$
 | V 拆出 heads   | reshape                                             | `[B, L_k, H, d_v]` |
 | V 将 head 轴前移 | transpose，交换位置轴与 head 轴                             | `[B, H, L_k, d_v]` |
 
-这里的普通 MHA 只是容量参照。**MLA 实际从 $X_{KV}$ 直接下投影得到 latent，不需要先生成上述完整 K/V 再压缩。**
+这里的普通 MHA 只是容量参照。**MLA 实际从 $X_{KV}$ 直接下投影得到 latent，不需要先生成上述完整 K/V 再压缩**。
 
 **② MLA 的 KV 下投影、归一化与各 head 上投影**。令 $W_{UK}\in\mathbb R^{Hd_k\times r}$、$W_{UV}\in\mathbb R^{Hd_v\times r}$ 为各 head 上投影矩阵沿行堆叠后的权重。
 

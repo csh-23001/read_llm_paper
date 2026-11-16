@@ -58,4 +58,5 @@
 - 写论文笔记时，引用部分只使用外部 URL；如果用户给的是本地 PDF 路径，请在笔记中替换为对应的 arXiv / 官方链接（必要时询问用户该论文的外链）。
 - 当笔记中出现一个跨论文复用的方法概念时，主动建议将其拆为独立笔记并改写为 `[[...]]` 链接。
 - 不写 `[[Note|alias]]`，需要别名时改用 frontmatter `aliases`；表格里的 wikilink 一律无 alias，表格里的字面量 `|` 转义为 `\|`。
+- 加粗文本结尾的中文句号放在结束标记 `**` 之后，例如 `**说明**。`，不把句号包在加粗范围内。
 - 遵循 Obsidian Flavored Markdown（wikilinks、callouts、frontmatter properties 等）。

@@ -114,7 +114,7 @@ V^{(l)}=[V_{\mathrm{ctx}}^{(l)};V_{\mathrm{query}}^{(l)}].
 \tag{2}
 $$
 
-式 (2) 是展开视角的示意；实际 [[MLA]] 保存压缩后的 latent，再通过各 head 的投影参与 attention。压缩、打分和矩阵吸收的完整公式见该概念笔记。**这是由目标 hidden states 构建草稿自己的 KV，不是直接复制目标所有层的 KV。**实现可跨层融合这些投影，但不改变此依赖关系。[上下文投影与缓存实现](https://github.com/vllm-project/vllm/blob/ab72c466aaac03524e9282c66cd00daafce647dc/vllm/models/kimi_k3/nvidia/dspark_mla.py#L227)
+式 (2) 是展开视角的示意；实际 [[MLA]] 保存压缩后的 latent，再通过各 head 的投影参与 attention。压缩、打分和矩阵吸收的完整公式见该概念笔记。**这是由目标 hidden states 构建草稿自己的 KV，不是直接复制目标所有层的 KV**。实现可跨层融合这些投影，但不改变此依赖关系。[上下文投影与缓存实现](https://github.com/vllm-project/vllm/blob/ab72c466aaac03524e9282c66cd00daafce647dc/vllm/models/kimi_k3/nvidia/dspark_mla.py#L227)
 
 K3 目标 MLA 使用 [[NoPE]]，而[本草稿模型卡](https://huggingface.co/Inferact/Kimi-K3.1-Pro-DSpark-preview)声明了 YaRN；目标与草稿的位置编码设置要分别核对。
 
@@ -338,7 +338,7 @@ for i in range(K):
     prev = y
 ```
 
-**验证时必须使用 Markov 修正后的实际草稿分布。**如果实际按式 (12) 采样，却把仅来自 bᵢ 的分布交给概率比/纠正算法，就无法沿用其分布保持保证。实现缓存修正后的 logits，再按采样规则计算概率。
+**验证时必须使用 Markov 修正后的实际草稿分布**。如果实际按式 (12) 采样，却把仅来自 bᵢ 的分布交给概率比/纠正算法，就无法沿用其分布保持保证。实现缓存修正后的 logits，再按采样规则计算概率。
 
 ## 5. 低秩转移偏置究竟学到了什么？
 

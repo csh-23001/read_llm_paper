@@ -18,7 +18,7 @@ updated: 2026-11-12
 
 关联论文：[[Kimi K3 - Open Frontier Intelligence]]。草稿模型的缓存与采样见 [[DSpark]]。
 
-直接结论：**TP4、DP2 不强制要求 DCP4。**对于不启用 PCP 的通常 MLA 布局，DCP 可以在 TP 组内取不同分片度；DCP4 能消除 TP4 组内共享 latent 历史缓存的重复。通用参数校验允许 DCP1、DCP2、DCP4，但具体模型的计算后端还可能有额外限制。
+直接结论：**TP4、DP2 不强制要求 DCP4**。对于不启用 PCP 的通常 MLA 布局，DCP 可以在 TP 组内取不同分片度；DCP4 能消除 TP4 组内共享 latent 历史缓存的重复。通用参数校验允许 DCP1、DCP2、DCP4，但具体模型的计算后端还可能有额外限制。
 
 下面默认 PP 和 PCP 均为 1；容量公式只讨论目标模型 MLA latent 历史缓存，忽略分页填充、量化元数据、DSA indexer cache、KDA 状态、草稿模型、Graph 与临时工作区。
 
@@ -67,7 +67,7 @@ GPU1：第 12—23 个 heads 的计算 + 完整 C_T
 GPU7：第 84—95 个 heads 的计算 + 完整 C_T
 ```
 
-示意中 head 编号仅用于表达分工。**TP 已经切分了 head 相关的计算与权重，而普通布局中的共享缓存仍被复制。**Kimi MLA 源码明确说明，Q/KV latent 在 TP ranks 上复制，后续上投影才做 TP 切分；缓存规格也将 latent 作为单个 KV head 处理。[实现依据](https://github.com/vllm-project/vllm/blob/a9dcfae9ef0756ce076d0053429d6c9afef067a3/vllm/models/kimi_k3/nvidia/mla.py#L219)
+示意中 head 编号仅用于表达分工。**TP 已经切分了 head 相关的计算与权重，而普通布局中的共享缓存仍被复制**。Kimi MLA 源码明确说明，Q/KV latent 在 TP ranks 上复制，后续上投影才做 TP 切分；缓存规格也将 latent 作为单个 KV head 处理。[实现依据](https://github.com/vllm-project/vllm/blob/a9dcfae9ef0756ce076d0053429d6c9afef067a3/vllm/models/kimi_k3/nvidia/mla.py#L219)
 
 从理论上也可以另行设计沿 latent 维度切分的 attention，但那需要跨卡合并内积等结果，改变计算和通信组织。这里的“TP 下复制缓存”描述的是这一普通实现布局，不能推导成任何实现都必须复制。
 
@@ -173,7 +173,7 @@ DP rank 1 / TP 组 B：GPU4、GPU5、GPU6、GPU7
 
 DP2 不会自动让一个请求跨两个 TP 组共享缓存。因此，不能把总 GPU 数 8 直接当成此布局的 DCP 大小。若同一前缀被分别路由到两个 DP ranks，两边也可能各自建立前缀缓存；跨 DP 复用需要额外机制。
 
-**Attention 分组不能直接套用到全部 MoE 权重。**在这里核对的 vLLM 实现中，即使不启用 EP，routed experts 也可以按 TP×DP 组成更大的张量并行组；启用 EP 后，则改为在这些 ranks 之间分配完整专家。因此，TP4、DP2 下，attention 按两个 TP4 组处理请求，而 routed experts 可以在八个 ranks 上做 TP 或 EP。仅凭 DP2 不能断言整套模型权重复制两份。[官方说明](https://github.com/vllm-project/vllm/blob/a9dcfae9ef0756ce076d0053429d6c9afef067a3/docs/serving/expert_parallel_deployment.md#L82)、[MoE 分组实现](https://github.com/vllm-project/vllm/blob/a9dcfae9ef0756ce076d0053429d6c9afef067a3/vllm/model_executor/layers/fused_moe/config.py#L1168)。MLA 缓存的 TP/DCP 分组仍按本节前面的规则理解。
+**Attention 分组不能直接套用到全部 MoE 权重**。在这里核对的 vLLM 实现中，即使不启用 EP，routed experts 也可以按 TP×DP 组成更大的张量并行组；启用 EP 后，则改为在这些 ranks 之间分配完整专家。因此，TP4、DP2 下，attention 按两个 TP4 组处理请求，而 routed experts 可以在八个 ranks 上做 TP 或 EP。仅凭 DP2 不能断言整套模型权重复制两份。[官方说明](https://github.com/vllm-project/vllm/blob/a9dcfae9ef0756ce076d0053429d6c9afef067a3/docs/serving/expert_parallel_deployment.md#L82)、[MoE 分组实现](https://github.com/vllm-project/vllm/blob/a9dcfae9ef0756ce076d0053429d6c9afef067a3/vllm/model_executor/layers/fused_moe/config.py#L1168)。MLA 缓存的 TP/DCP 分组仍按本节前面的规则理解。
 
 ## 6. 应用于 Kimi-K3.1-Pro，还要看专用路径的限制
 
