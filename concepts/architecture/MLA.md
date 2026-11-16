@@ -112,43 +112,43 @@ $$
 
 **① 压缩前的参照：普通 MHA 的 K/V 有多大？**
 
-| 步骤 | 运算 | 输出形状 |
-|---|---|---|
-| 原始特征 | $X_{KV}$ | `[B, L_k, d]` |
-| 普通 K 投影 | $X_{KV}(W_K^{\mathrm{MHA}})^\top$，权重形状 `[H*d_k, d]` | `[B, L_k, H*d_k]` |
-| K 拆出 heads | reshape | `[B, L_k, H, d_k]` |
-| K 将 head 轴前移 | transpose，交换位置轴与 head 轴 | `[B, H, L_k, d_k]` |
-| 普通 V 投影 | $X_{KV}(W_V^{\mathrm{MHA}})^\top$，权重形状 `[H*d_v, d]` | `[B, L_k, H*d_v]` |
-| V 拆出 heads | reshape | `[B, L_k, H, d_v]` |
-| V 将 head 轴前移 | transpose，交换位置轴与 head 轴 | `[B, H, L_k, d_v]` |
+| 步骤           | 运算                                                  | 输出形状               |
+| ------------ | --------------------------------------------------- | ------------------ |
+| 原始特征         | $X_{KV}$                                            | `[B, L_k, d]`      |
+| 普通 K 投影      | $X_{KV}(W_K^{\mathrm{MHA}})^\top$，权重形状 `[H*d_k, d]` | `[B, L_k, H*d_k]`  |
+| K 拆出 heads   | reshape                                             | `[B, L_k, H, d_k]` |
+| K 将 head 轴前移 | transpose，交换位置轴与 head 轴                             | `[B, H, L_k, d_k]` |
+| 普通 V 投影      | $X_{KV}(W_V^{\mathrm{MHA}})^\top$，权重形状 `[H*d_v, d]` | `[B, L_k, H*d_v]`  |
+| V 拆出 heads   | reshape                                             | `[B, L_k, H, d_v]` |
+| V 将 head 轴前移 | transpose，交换位置轴与 head 轴                             | `[B, H, L_k, d_v]` |
 
 这里的普通 MHA 只是容量参照。**MLA 实际从 $X_{KV}$ 直接下投影得到 latent，不需要先生成上述完整 K/V 再压缩。**
 
 **② MLA 的 KV 下投影、归一化与各 head 上投影。**令 $W_{UK}\in\mathbb R^{Hd_k\times r}$、$W_{UV}\in\mathbb R^{Hd_v\times r}$ 为各 head 上投影矩阵沿行堆叠后的权重。
 
-| 步骤 | 运算 | 输出形状 |
-|---|---|---|
-| KV 下投影 | $C_{\mathrm{raw}}=X_{KV}(W_D^{KV})^\top$，权重形状 `[r, d]` | `[B, L_k, r]` |
-| Latent 归一化 | $C=\mathcal N_{KV}(C_{\mathrm{raw}})$，沿最后的 $r$ 维计算 | `[B, L_k, r]` |
-| 内容 K 上投影 | $K_{\mathrm{flat}}=CW_{UK}^\top$，权重形状 `[H*d_k, r]` | `[B, L_k, H*d_k]` |
-| K 拆出 heads | reshape | `[B, L_k, H, d_k]` |
-| K 将 head 轴前移 | transpose | `[B, H, L_k, d_k]` |
-| V 上投影 | $V_{\mathrm{flat}}=CW_{UV}^\top$，权重形状 `[H*d_v, r]` | `[B, L_k, H*d_v]` |
-| V 拆出 heads | reshape | `[B, L_k, H, d_v]` |
-| V 将 head 轴前移 | transpose | `[B, H, L_k, d_v]` |
+| 步骤           | 运算                                                     | 输出形状               |
+| ------------ | ------------------------------------------------------ | ------------------ |
+| KV 下投影       | $C_{\mathrm{raw}}=X_{KV}(W_D^{KV})^\top$，权重形状 `[r, d]` | `[B, L_k, r]`      |
+| Latent 归一化   | $C=\mathcal N_{KV}(C_{\mathrm{raw}})$，沿最后的 $r$ 维计算     | `[B, L_k, r]`      |
+| 内容 K 上投影     | $K_{\mathrm{flat}}=CW_{UK}^\top$，权重形状 `[H*d_k, r]`     | `[B, L_k, H*d_k]`  |
+| K 拆出 heads   | reshape                                                | `[B, L_k, H, d_k]` |
+| K 将 head 轴前移 | transpose                                              | `[B, H, L_k, d_k]` |
+| V 上投影        | $V_{\mathrm{flat}}=CW_{UV}^\top$，权重形状 `[H*d_v, r]`     | `[B, L_k, H*d_v]`  |
+| V 拆出 heads   | reshape                                                | `[B, L_k, H, d_v]` |
+| V 将 head 轴前移 | transpose                                              | `[B, H, L_k, d_v]` |
 
 **长期缓存的是 $C$，形状为 `[B, L_k, r]`，没有 head 轴。**表中的完整 K/V 是便于理解的展开结果，是否临时物化由计算路径决定。
 
 **③ Query 的下投影与上投影。**令 $W_{UQ}\in\mathbb R^{Hd_k\times r_q}$ 为所有 query heads 的上投影权重。
 
-| 步骤 | 运算 | 输出形状 |
-|---|---|---|
-| 本轮输入 | $X_Q$ | `[B, L_q, d]` |
-| Query 下投影 | $C_{\mathrm{raw}}^Q=X_Q(W_D^Q)^\top$，权重形状 `[r_q, d]` | `[B, L_q, r_q]` |
-| Query latent 归一化 | $C^Q=\mathcal N_Q(C_{\mathrm{raw}}^Q)$，沿最后的 $r_q$ 维计算 | `[B, L_q, r_q]` |
-| Query 上投影 | $Q_{\mathrm{flat}}=C^QW_{UQ}^\top$，权重形状 `[H*d_k, r_q]` | `[B, L_q, H*d_k]` |
-| Q 拆出 heads | reshape | `[B, L_q, H, d_k]` |
-| Q 将 head 轴前移 | transpose | `[B, H, L_q, d_k]` |
+| 步骤               | 运算                                                     | 输出形状               |
+| ---------------- | ------------------------------------------------------ | ------------------ |
+| 本轮输入             | $X_Q$                                                  | `[B, L_q, d]`      |
+| Query 下投影        | $C_{\mathrm{raw}}^Q=X_Q(W_D^Q)^\top$，权重形状 `[r_q, d]`   | `[B, L_q, r_q]`    |
+| Query latent 归一化 | $C^Q=\mathcal N_Q(C_{\mathrm{raw}}^Q)$，沿最后的 $r_q$ 维计算  | `[B, L_q, r_q]`    |
+| Query 上投影        | $Q_{\mathrm{flat}}=C^QW_{UQ}^\top$，权重形状 `[H*d_k, r_q]` | `[B, L_q, H*d_k]`  |
+| Q 拆出 heads       | reshape                                                | `[B, L_q, H, d_k]` |
+| Q 将 head 轴前移     | transpose                                              | `[B, H, L_q, d_k]` |
 
 **④ Attention 打分、mask、softmax 和 value 聚合。**下式中的转置只交换最后两个轴，保留 batch 和 head 轴：
 
@@ -159,14 +159,14 @@ A=\operatorname{softmax}_{\mathrm{last}}(S),
 \qquad O=AV.
 $$
 
-| 步骤 | 运算及形状变化 | 输出形状 |
-|---|---|---|
-| K 的最后两轴转置 | `[B, H, L_k, d_k]` → `[B, H, d_k, L_k]` | `[B, H, d_k, L_k]` |
-| Query-key 内积 | `[B, H, L_q, d_k]` @ `[B, H, d_k, L_k]` | `[B, H, L_q, L_k]` |
-| 缩放 | 除以 $\sqrt{d_k}$ | `[B, H, L_q, L_k]` |
-| 加因果 mask | 加上 `[1, 1, L_q, L_k]` 的 $M$，广播到各 batch/head | `[B, H, L_q, L_k]` |
-| Softmax | 沿最后的 $L_k$ 轴归一化，每个 query/head 得到一组历史位置权重 | `[B, H, L_q, L_k]` |
-| Value 加权求和 | `[B, H, L_q, L_k]` @ `[B, H, L_k, d_v]` | `[B, H, L_q, d_v]` |
+| 步骤           | 运算及形状变化                                     | 输出形状               |
+| ------------ | ------------------------------------------- | ------------------ |
+| K 的最后两轴转置    | `[B, H, L_k, d_k]` → `[B, H, d_k, L_k]`     | `[B, H, d_k, L_k]` |
+| Query-key 内积 | `[B, H, L_q, d_k]` @ `[B, H, d_k, L_k]`     | `[B, H, L_q, L_k]` |
+| 缩放           | 除以 $\sqrt{d_k}$                             | `[B, H, L_q, L_k]` |
+| 加因果 mask     | 加上 `[1, 1, L_q, L_k]` 的 $M$，广播到各 batch/head | `[B, H, L_q, L_k]` |
+| Softmax      | 沿最后的 $L_k$ 轴归一化，每个 query/head 得到一组历史位置权重    | `[B, H, L_q, L_k]` |
+| Value 加权求和   | `[B, H, L_q, L_k]` @ `[B, H, L_k, d_v]`     | `[B, H, L_q, d_v]` |
 
 若 query 对应 K/V 的末尾 $L_q$ 个连续位置，采用从 1 开始的局部下标，因果 mask 为：
 
@@ -183,14 +183,14 @@ $$
 
 **⑤ 合并 heads，投影回模型维度。**这里“最后输出”指 attention 模块的输出，不包含后续残差相加或 FFN。
 
-| 步骤 | 运算 | 输出形状 |
-|---|---|---|
-| 各 head 的聚合结果 | $O$ | `[B, H, L_q, d_v]` |
-| 将位置轴移回前面 | transpose | `[B, L_q, H, d_v]` |
-| 拼接所有 heads | reshape，得到 $U$ | `[B, L_q, H*d_v]` |
-| 若采用 K3 输出门控 | $G=\operatorname{sigmoid}(X_QW_g^\top)$，权重形状 `[H*d_v, d]` | `[B, L_q, H*d_v]` |
-| 应用门控 | $U_g=G\odot U$；没有门控时直接使用 $U$ | `[B, L_q, H*d_v]` |
-| 输出投影 | $Y=U_gW_O^\top$，权重形状 `[d, H*d_v]` | `[B, L_q, d]` |
+| 步骤           | 运算                                                        | 输出形状               |
+| ------------ | --------------------------------------------------------- | ------------------ |
+| 各 head 的聚合结果 | $O$                                                       | `[B, H, L_q, d_v]` |
+| 将位置轴移回前面     | transpose                                                 | `[B, L_q, H, d_v]` |
+| 拼接所有 heads   | reshape，得到 $U$                                            | `[B, L_q, H*d_v]`  |
+| 若采用 K3 输出门控  | $G=\operatorname{sigmoid}(X_QW_g^\top)$，权重形状 `[H*d_v, d]` | `[B, L_q, H*d_v]`  |
+| 应用门控         | $U_g=G\odot U$；没有门控时直接使用 $U$                              | `[B, L_q, H*d_v]`  |
+| 输出投影         | $Y=U_gW_O^\top$，权重形状 `[d, H*d_v]`                         | `[B, L_q, d]`      |
 
 这条路径的 attention 形状主线是：
 
@@ -208,16 +208,16 @@ Q [B,H,L_q,d_k] × K^T [B,H,d_k,L_k]
 
 §4 推导了矩阵吸收；这里直接列出形状。令 $\mathcal W_K$ 为各 head 的 $W_{UK}^{(h)}$ 堆叠，形状 `[H, d_k, r]`；$\mathcal W_V$ 为各 head 的 $(W_{UV}^{(h)})^\top$ 堆叠，形状 `[H, r, d_v]`。
 
-| 步骤 | 运算及形状变化 | 输出形状 |
-|---|---|---|
-| 将 Q 投影到 latent 空间 | $\widetilde Q=Q\mathcal W_K$：`[B,H,L_q,d_k]` @ `[H,d_k,r]` | `[B,H,L_q,r]` |
-| 给缓存增加可广播的 head 轴 | $C_H=C[:,\mathrm{None},:,:]$，由 `[B,L_k,r]` 增加长度为 1 的轴 | `[B,1,L_k,r]` |
-| 缓存最后两轴转置 | $C_H^\top$，仅交换最后两个轴 | `[B,1,r,L_k]` |
-| 直接对 latent 打分 | $\widetilde Q C_H^\top$：`[B,H,L_q,r]` @ `[B,1,r,L_k]` | `[B,H,L_q,L_k]` |
-| 缩放、mask、softmax | 仍除以 $\sqrt{d_k}$，使用与 §2.4 相同的 mask 和 softmax 轴，得到 $A$ | `[B,H,L_q,L_k]` |
-| 聚合 latent | $Z=AC_H$：`[B,H,L_q,L_k]` @ `[B,1,L_k,r]` | `[B,H,L_q,r]` |
-| 将聚合结果上投影为 value 输出 | $O=Z\mathcal W_V$：`[B,H,L_q,r]` @ `[H,r,d_v]` | `[B,H,L_q,d_v]` |
-| 合并 heads、门控、输出投影 | 与 §2.4 的步骤 ⑤ 相同 | `[B,L_q,d]` |
+| 步骤                 | 运算及形状变化                                                    | 输出形状            |
+| ------------------ | ---------------------------------------------------------- | --------------- |
+| 将 Q 投影到 latent 空间  | $\widetilde Q=Q\mathcal W_K$：`[B,H,L_q,d_k]` @ `[H,d_k,r]` | `[B,H,L_q,r]`   |
+| 给缓存增加可广播的 head 轴   | $C_H=C[:,\mathrm{None},:,:]$，由 `[B,L_k,r]` 增加长度为 1 的轴      | `[B,1,L_k,r]`   |
+| 缓存最后两轴转置           | $C_H^\top$，仅交换最后两个轴                                        | `[B,1,r,L_k]`   |
+| 直接对 latent 打分      | $\widetilde Q C_H^\top$：`[B,H,L_q,r]` @ `[B,1,r,L_k]`      | `[B,H,L_q,L_k]` |
+| 缩放、mask、softmax    | 仍除以 $\sqrt{d_k}$，使用与 §2.4 相同的 mask 和 softmax 轴，得到 $A$      | `[B,H,L_q,L_k]` |
+| 聚合 latent          | $Z=AC_H$：`[B,H,L_q,L_k]` @ `[B,1,L_k,r]`                   | `[B,H,L_q,r]`   |
+| 将聚合结果上投影为 value 输出 | $O=Z\mathcal W_V$：`[B,H,L_q,r]` @ `[H,r,d_v]`              | `[B,H,L_q,d_v]` |
+| 合并 heads、门控、输出投影   | 与 §2.4 的步骤 ⑤ 相同                                            | `[B,L_q,d]`     |
 
 `[B,1,L_k,r]` 的 head 轴按计算需要广播到 $H$；**广播不意味着必须存下 $H$ 份 latent**。这条路径保留相同形状的 attention 权重，但用共享 latent 代替展开后的历史 K/V。
 
@@ -225,37 +225,37 @@ Q [B,H,L_q,d_k] × K^T [B,H,d_k,L_k]
 
 下面取一组**假设尺寸**：$B=2,d=16,H=2,d_k=4,d_v=6,r=3,r_q=5$。先 prefill 3 个 token，再 decode 1 个新 token：
 
-| 张量 | Prefill：$L_q=L_k=3$ | 下一轮 decode：$L_q=1,L_k=4$ |
-|---|---|---|
-| 本轮输入 $X_Q$ | `[2,3,16]` | `[2,1,16]` |
-| 本轮 query latent $C^Q$ | `[2,3,5]` | `[2,1,5]` |
-| 全部 KV latent cache $C$ | `[2,3,3]` | `[2,4,3]`，只追加 `[2,1,3]` |
-| Query $Q$ | `[2,2,3,4]` | `[2,2,1,4]` |
-| 展开后的 K | `[2,2,3,4]` | `[2,2,4,4]` |
-| 展开后的 V | `[2,2,3,6]` | `[2,2,4,6]` |
-| Scores / attention 权重 $A$ | `[2,2,3,3]` | `[2,2,1,4]` |
-| Latent query $\widetilde Q$ | `[2,2,3,3]` | `[2,2,1,3]` |
-| Latent 聚合结果 $Z$ | `[2,2,3,3]` | `[2,2,1,3]` |
-| 每 head 输出 $O$ | `[2,2,3,6]` | `[2,2,1,6]` |
-| 拼接 / 门控后的输出 $U$ 或 $U_g$ | `[2,3,12]` | `[2,1,12]` |
-| 最终输出 $Y$ | `[2,3,16]` | `[2,1,16]` |
+| 张量                          | Prefill：$L_q=L_k=3$ | 下一轮 decode：$L_q=1,L_k=4$ |
+| --------------------------- | ------------------- | ------------------------ |
+| 本轮输入 $X_Q$                  | `[2,3,16]`          | `[2,1,16]`               |
+| 本轮 query latent $C^Q$       | `[2,3,5]`           | `[2,1,5]`                |
+| 全部 KV latent cache $C$      | `[2,3,3]`           | `[2,4,3]`，只追加 `[2,1,3]`  |
+| Query $Q$                   | `[2,2,3,4]`         | `[2,2,1,4]`              |
+| 展开后的 K                      | `[2,2,3,4]`         | `[2,2,4,4]`              |
+| 展开后的 V                      | `[2,2,3,6]`         | `[2,2,4,6]`              |
+| Scores / attention 权重 $A$   | `[2,2,3,3]`         | `[2,2,1,4]`              |
+| Latent query $\widetilde Q$ | `[2,2,3,3]`         | `[2,2,1,3]`              |
+| Latent 聚合结果 $Z$             | `[2,2,3,3]`         | `[2,2,1,3]`              |
+| 每 head 输出 $O$               | `[2,2,3,6]`         | `[2,2,1,6]`              |
+| 拼接 / 门控后的输出 $U$ 或 $U_g$     | `[2,3,12]`          | `[2,1,12]`               |
+| 最终输出 $Y$                    | `[2,3,16]`          | `[2,1,16]`               |
 
 这里 prefill 的 $L_k$ 与 $r$ 恰好都等于 3，所以 $A$、$\widetilde Q$ 和 $Z$ 的数组尺寸相同，**轴的含义仍不同**：$A$ 最后一轴是历史位置，后两者最后一轴是 latent 特征。
 
 若使用 §5 的解耦 RoPE，令 $d_R$ 为额外的位置特征维度，内容分支沿用上面的形状；位置分支及其合并方式为：
 
-| 步骤 | 形状变化 |
-|---|---|
-| 位置 query 投影 | $C^QW_{QR}^\top$：`[B,L_q,r_q]` @ `[r_q,H*d_R]` → `[B,L_q,H*d_R]` |
-| 位置 query 拆 heads 并前移 head 轴 | `[B,L_q,H*d_R]` → `[B,L_q,H,d_R]` → `[B,H,L_q,d_R]` |
-| 对位置 query 应用 RoPE | `[B,H,L_q,d_R]` → `[B,H,L_q,d_R]` |
-| 共享位置 key 投影并旋转 | $X_{KV}W_{KR}^\top$：`[B,L_k,d]` @ `[d,d_R]` → `[B,L_k,d_R]`；RoPE 后形状不变 |
-| 为位置 key 增加 head 轴并广播 | `[B,L_k,d_R]` → `[B,1,L_k,d_R]`，逻辑上可广播到 `[B,H,L_k,d_R]` |
-| 拼接内容与位置 query | `[B,H,L_q,d_k]` + `[B,H,L_q,d_R]` → `[B,H,L_q,d_k+d_R]` |
-| 拼接内容与位置 key | `[B,H,L_k,d_k]` + 广播的位置 key → `[B,H,L_k,d_k+d_R]` |
-| 拼接后的 QK 打分 | `[B,H,L_q,d_k+d_R]` @ `[B,H,d_k+d_R,L_k]` → `[B,H,L_q,L_k]` |
-| 缩放、mask、softmax | 改用 $\sqrt{d_k+d_R}$；权重形状仍为 `[B,H,L_q,L_k]` |
-| Value 聚合到最终输出 | V 维度仍是 $d_v$；后续形状与 §2.4、§2.5 相同 |
+| 步骤                          | 形状变化                                                                   |
+| --------------------------- | ---------------------------------------------------------------------- |
+| 位置 query 投影                 | $C^QW_{QR}^\top$：`[B,L_q,r_q]` @ `[r_q,H*d_R]` → `[B,L_q,H*d_R]`       |
+| 位置 query 拆 heads 并前移 head 轴 | `[B,L_q,H*d_R]` → `[B,L_q,H,d_R]` → `[B,H,L_q,d_R]`                    |
+| 对位置 query 应用 RoPE           | `[B,H,L_q,d_R]` → `[B,H,L_q,d_R]`                                      |
+| 共享位置 key 投影并旋转              | $X_{KV}W_{KR}^\top$：`[B,L_k,d]` @ `[d,d_R]` → `[B,L_k,d_R]`；RoPE 后形状不变 |
+| 为位置 key 增加 head 轴并广播        | `[B,L_k,d_R]` → `[B,1,L_k,d_R]`，逻辑上可广播到 `[B,H,L_k,d_R]`                |
+| 拼接内容与位置 query               | `[B,H,L_q,d_k]` + `[B,H,L_q,d_R]` → `[B,H,L_q,d_k+d_R]`                |
+| 拼接内容与位置 key                 | `[B,H,L_k,d_k]` + 广播的位置 key → `[B,H,L_k,d_k+d_R]`                      |
+| 拼接后的 QK 打分                  | `[B,H,L_q,d_k+d_R]` @ `[B,H,d_k+d_R,L_k]` → `[B,H,L_q,L_k]`            |
+| 缩放、mask、softmax             | 改用 $\sqrt{d_k+d_R}$；权重形状仍为 `[B,H,L_q,L_k]`                             |
+| Value 聚合到最终输出               | V 维度仍是 $d_v$；后续形状与 §2.4、§2.5 相同                                        |
 
 表里的 `+` 表示沿最后一轴拼接，不是逐元素相加。Latent 路径则分别计算内容打分与位置打分，二者都是 `[B,H,L_q,L_k]`，相加后再缩放、加 mask、softmax；不必实际拼接完整历史 key。其逻辑缓存由 `[B,L_k,r]` 的 $C$ 和 `[B,L_k,d_R]` 的位置 key 组成。
 
@@ -408,11 +408,11 @@ $$
 
 以下只计单层、长度 $T$ 的历史缓存元素数，不计 TP 复制、页填充、量化元数据和额外状态：
 
-| 路径 | 每 token 保存什么 | 历史缓存元素数 |
-|---|---|---|
-| 普通 MHA | 各 head 的 K/V | $TH(d_k+d_v)$ |
-| NoPE MLA | 共享 latent $c_j$ | $Tr$ |
-| 上述解耦 RoPE MLA | 共享 latent 和位置 key | $T(r+d_R)$ |
+| 路径            | 每 token 保存什么      | 历史缓存元素数       |
+| ------------- | ----------------- | ------------- |
+| 普通 MHA        | 各 head 的 K/V      | $TH(d_k+d_v)$ |
+| NoPE MLA      | 共享 latent $c_j$   | $Tr$          |
+| 上述解耦 RoPE MLA | 共享 latent 和位置 key | $T(r+d_R)$    |
 
 相同存储精度下，NoPE MLA 相对该 MHA 基线的容量比例为 $r/[H(d_k+d_v)]$；元素数乘每元素字节数才得到存储字节数。压缩后的历史仍随 $T$ 增长，MLA 不是把全部历史合成一份固定大小状态。
 
