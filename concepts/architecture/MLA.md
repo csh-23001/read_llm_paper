@@ -15,6 +15,8 @@ arxiv: https://arxiv.org/abs/2405.04434
 
 MLA 为每个历史 token 保存一份各个 heads 共享的低维 latent，再用各 head 的投影读取其中的 key/value 信息，从而减少 KV cache。
 
+可以将它理解为 **K/V 采用共享低维表示的多头 attention**：逻辑上仍执行 query-key 打分、softmax 和 value 加权求和。它没有把整个模型的特征维度永久改成 $r$；输出仍回到模型维度 $d$，decode 还可利用矩阵吸收直接读取 latent。
+
 下面先推导不带显式位置编码的 [[NoPE]] 版本，再补充 DeepSeek-V2 风格的解耦 RoPE。单 token 公式只讨论单层、单请求，向量均为列向量；§2.4–2.6 另外用批量张量展示完整形状。省略 bias、量化和并行通信。矩阵重排在实数运算下等价，不保证不同浮点 kernel 的结果逐位相同。
 
 ## 1. 符号与普通多头注意力
@@ -38,6 +40,8 @@ v_j^{(h)}=W_V^{(h)}x_j,
 $$
 
 其中 $W_Q^{(h)},W_K^{(h)}\in\mathbb R^{d_k\times d}$，$W_V^{(h)}\in\mathbb R^{d_v\times d}$。长度为 $T$ 的历史需要缓存约 $TH(d_k+d_v)$ 个 K/V 元素；query 随当前计算产生，不属于通常的历史 KV cache。
+
+对普通 self-attention，**同一位置的 $x_j$ 分别乘三个不同的权重矩阵，得到该位置的 Q、K、V**。式 (1) 将当前 query 的位置写成 $t$，将可读取的历史 K/V 位置写成 $j$，是为了区分位置范围。
 
 ## 2. MLA 怎样压缩 K/V？
 
@@ -109,6 +113,8 @@ $$
 - $r,r_q$：KV、query 的压缩维度。**不要求 $d=Hd_k=Hd_v$，也不要求 $L_q=L_k$**。
 
 输入记作 $X_Q\in\mathbb R^{B\times L_q\times d}$ 和 $X_{KV}\in\mathbb R^{B\times L_k\times d}$。$X_{KV}$ 是历史特征堆叠的数学视图；decode 实际复用已缓存的 latent，只为新位置追加投影结果，不重新投影全部历史。
+
+这里的 $X_Q$、$X_{KV}$ 都来自同一层的输入特征，只是覆盖的位置范围不同：前者包含本轮需要计算 query 的位置，后者还包括已经缓存的历史位置。
 
 **① 压缩前的参照：普通 MHA 的 K/V 有多大？**
 
@@ -221,7 +227,31 @@ Q [B,H,L_q,d_k] × K^T [B,H,d_k,L_k]
 
 `[B,1,L_k,r]` 的 head 轴按计算需要广播到 $H$；**广播不意味着必须存下 $H$ 份 latent**。这条路径保留相同形状的 attention 权重，但用共享 latent 代替展开后的历史 K/V。
 
+**逐 token decode 时，缓存 C 的生命周期**：
+
+1. 新 token 到来时，用它的输入特征计算一次 $c_{\mathrm{new}}$ 并追加到本层的 $C$。历史 latent 直接复用。
+2. 本轮生成当前 query，并将其投影为 $\widetilde Q$，直接与缓存的 $C$ 计算打分；不需要逐个重建全部历史的完整 K/V。
+3. 用 attention 权重将 latent 聚合成当前的 $Z$，再将 $Z$ 上投影为各 head 的输出，而不是把每个历史 $c_j$ 都先上投影成 value。
+
+因此每轮仍有 query 投影和聚合结果的 value 上投影，也仍要读取相关历史；**复用 C 不等于每轮展开一遍全部历史 K/V**。如果选择 §2.4 的展开计算路径，则可以临时重建 K/V，长期缓存与临时计算要分别看。
+
 ### 2.6 Prefill、decode 与 RoPE 的形状对照
+
+设进入本轮前已有 $T$ 个 token 的缓存，本轮处理 $m$ 个新位置。在这里的因果 self-attention 约定下：
+
+$$
+L_q=m,\qquad L_k=T+m,\qquad
+X_Q\in\mathbb R^{B\times m\times d}.
+$$
+
+| 场景 | 本轮 query 位置数 | $X_Q$ 的形状 |
+|---|---|---|
+| 普通逐 token 自回归 decode | $m=1$ | `[B,1,d]` |
+| 初始提示词 prefill | $m$ 为本轮处理的提示词 token 数 | `[B,m,d]` |
+| 追加输入或分块 prefill | $m$ 为本轮新增输入或当前分块的 token 数 | `[B,m,d]` |
+| 推测解码中的目标验证 | 可一次验证多个候选；按本文 DSpark 对齐，anchor 加 $K$ 个候选时 $m=K+1$ | `[B,K+1,d]` |
+
+所以 $L_q>1$ 不仅出现在用户提供多 token 输入时，也出现在多候选验证时。**Batch 中的请求数与每个请求的 query 数是不同的轴**：例如 16 个请求各做一步普通 decode，输入是 `[16,1,d]`，不是把 $L_q$ 写成 16。
 
 下面取一组**假设尺寸**：$B=2,d=16,H=2,d_k=4,d_v=6,r=3,r_q=5$。先 prefill 3 个 token，再 decode 1 个新 token：
 
