@@ -227,7 +227,7 @@ $$
 \tag{11}
 $$
 
-在本文仅考虑 temperature 的情形，实际起草分布为：
+在本文仅考虑 temperature 的情形，用 [[Softmax]] 沿词表维度归一化，实际起草分布为：
 
 $$
 q_i(v\mid C,Y_{i-1})
@@ -504,7 +504,7 @@ $$
 
 ## 7. Confidence head 与 Markov head 的区别
 
-Markov head 输出 V 个修正 logits，改变草稿的 token 分布。Confidence head 输出一个标量，预测验证相关的接受置信度。对于当前配置的 hidden/Markov 拼接：
+Markov head 输出 V 个修正 logits，改变草稿的 token 分布。Confidence head 输出一个标量，通过 [[Sigmoid]] 映射到 0～1，预测验证相关的接受置信度。对于当前配置的 hidden/Markov 拼接：
 
 $$
 \widehat c_i

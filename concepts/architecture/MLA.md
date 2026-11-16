@@ -182,7 +182,7 @@ $$
 | Query-key 内积 | `[B, H, L_q, d_k]` @ `[B, H, d_k, L_k]`     | `[B, H, L_q, L_k]` |
 | 缩放           | 除以 $\sqrt{d_k}$                             | `[B, H, L_q, L_k]` |
 | 加因果 mask     | 加上 `[1, 1, L_q, L_k]` 的 $M$，广播到各 batch/head | `[B, H, L_q, L_k]` |
-| Softmax      | 沿最后的 $L_k$ 轴归一化，每个 query/head 得到一组历史位置权重    | `[B, H, L_q, L_k]` |
+| [[Softmax]]  | 沿最后的 $L_k$ 轴归一化，每个 query/head 得到一组历史位置权重    | `[B, H, L_q, L_k]` |
 | Value 加权求和   | `[B, H, L_q, L_k]` @ `[B, H, L_k, d_v]`     | `[B, H, L_q, d_v]` |
 
 若 query 对应 K/V 的末尾 $L_q$ 个连续位置，采用从 1 开始的局部下标，因果 mask 为：
@@ -205,7 +205,7 @@ $$
 | 各 head 的聚合结果 | $O$                                                       | `[B, H, L_q, d_v]` |
 | 将位置轴移回前面     | transpose                                                 | `[B, L_q, H, d_v]` |
 | 拼接所有 heads   | reshape，得到 $U$                                            | `[B, L_q, H*d_v]`  |
-| 若采用 K3 输出门控  | $G=\operatorname{sigmoid}(X_QW_g^\top)$，权重形状 `[H*d_v, d]` | `[B, L_q, H*d_v]`  |
+| 若采用 K3 输出门控（[[Sigmoid]]） | $G=\operatorname{sigmoid}(X_QW_g^\top)$，权重形状 `[H*d_v, d]` | `[B, L_q, H*d_v]` |
 | 应用门控         | $U_g=G\odot U$；没有门控时直接使用 $U$                              | `[B, L_q, H*d_v]`  |
 | 输出投影         | $Y=U_gW_O^\top$，权重形状 `[d, H*d_v]`                         | `[B, L_q, d]`      |
 
@@ -304,7 +304,7 @@ $$
 
 ## 3. 先按展开后的 K/V 理解完整计算
 
-因果 attention 只读取 $j\le t$ 的位置。每个 head 先计算打分，再沿历史位置做 softmax：
+因果 attention 只读取 $j\le t$ 的位置。每个 head 先计算打分，再沿历史位置用 [[Softmax]] 归一化为权重：
 
 $$
 s_{tj}^{(h)}=
@@ -397,7 +397,7 @@ $$
 
 ### 4.3 K3 的 Gated MLA 多了什么？
 
-记 $u_t=[o_t^{(1)};\ldots;o_t^{(H)}]\in\mathbb R^{Hd_v}$。K3 在输出投影前增加逐通道门控：
+记 $u_t=[o_t^{(1)};\ldots;o_t^{(H)}]\in\mathbb R^{Hd_v}$。K3 在输出投影前增加逐通道门控，用 [[Sigmoid]] 将各通道的门控打分独立映射到 0～1：
 
 $$
 g_t=\operatorname{sigmoid}(W_gx_t),\qquad
@@ -464,5 +464,6 @@ Prefill 可以为高吞吐临时展开 K/V，decode 可以直接读取 latent；
 - [[Kimi K3 - Open Frontier Intelligence]]：NoPE Gated MLA，与 KDA 交错使用。
 - [[DSpark#2.1 目标特征不是“再跑一次完整目标模型”]]：$f_j$ 是草稿 context 分支的输入；各草稿层再用自己的投影生成 latent，不能把 $f_j$ 本身当成全部层共享的 MLA cache。
 - [[RMSNorm]]：说明式 (2)、(5) 中的归一化；它与 DSpark 特征融合后的归一化处于不同位置。
+- [[Softmax]]：沿历史位置生成 attention 权重；[[Sigmoid]]：逐通道生成输出门控系数。
 
 原始方法：[DeepSeek-V2，2024](https://arxiv.org/abs/2405.04434)。Kimi 实现事实限定于上文固定的 vLLM commit；这些代数公式不构成某套硬件上的性能测量。
