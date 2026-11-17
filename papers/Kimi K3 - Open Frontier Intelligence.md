@@ -54,7 +54,7 @@ updated: 2026-11-12
 | MTP                                   | 1 层                                   | 论文从该层微调 EAGLE-3 风格草稿              |
 | 上下文窗口                                 | 1M token                              | 长上下文使缓存布局、prefix cache 和 TTFT 更关键 |
 
-**激活 104.2B 参数不意味着只需存下 104.2B 参数。**在通常将权重驻留 GPU 的部署中，需要为全部权重及运行状态规划容量；每 token 的路由只决定本轮计算哪些专家。
+**激活 104.2B 参数不意味着只需存下 104.2B 参数**。在通常将权重驻留 GPU 的部署中，需要为全部权重及运行状态规划容量；每 token 的路由只决定本轮计算哪些专家。
 
 论文 §4.1.4 将 MoE expert 权重做 MXFP4 QAT，激活采用 MXFP8，attention、latent MoE 投影、shared experts 和 router 等保留较高精度。这是论文的训练与部署方案；某个 vLLM checkpoint 的权重格式、KV cache dtype 和 kernel 支持还需分别核对。
 
@@ -62,10 +62,10 @@ updated: 2026-11-12
 
 架构公式见 [[MLA]]，位置编码方式见 [[NoPE]]；并行缓存的容量算例见 [[MLA-TP-DP-DCP]]。理解 K3 时最关键的是：
 
-- **MLA 压缩的是每个历史 token 的表示。**同层同请求的各个 heads 从同一个 latent 读取信息。
-- **普通 TP 主要切分 head 相关的投影和计算。**在这里引用的实现中，latent 本身在 TP ranks 上复制；切分 heads 不等于切分 latent 历史。
-- **DCP 沿历史位置切分缓存。**每个 rank 保存部分 token 的完整 latent，再合并各分片的 attention 结果。
-- **DP 为 attention 建立处理不同请求的组。**它不自动将一条请求的缓存跨 DP 组共享；MoE 的权重布局则要另外看 TP/EP 分组。
+- **MLA 压缩的是每个历史 token 的表示**。同层同请求的各个 heads 从同一个 latent 读取信息。
+- **普通 TP 主要切分 head 相关的投影和计算**。在这里引用的实现中，latent 本身在 TP ranks 上复制；切分 heads 不等于切分 latent 历史。
+- **DCP 沿历史位置切分缓存**。每个 rank 保存部分 token 的完整 latent，再合并各分片的 attention 结果。
+- **DP 为 attention 建立处理不同请求的组**。它不自动将一条请求的缓存跨 DP 组共享；MoE 的权重布局则要另外看 TP/EP 分组。
 
 以 PP=PCP=1、TP4、DP2 为例，总 GPU 数是 8。DCP 复用各自 TP4 组内的 ranks，**不再乘一个 GPU 数量因子**。通用配置规则允许 DCP1/2/4；DCP4 可以消除每个 TP4 组内的 latent 历史重复，但不据此保证最快。
 
@@ -78,7 +78,7 @@ updated: 2026-11-12
 
 ## 4. KDA 的固定状态为什么仍影响推测解码？
 
-论文 §5.1 说明，KDA 用每 head 固定形状的 recurrent state 保存历史；MLA 则保留各历史位置的 latent。**固定大小描述的是 KDA 单个状态的形状，整个混合模型仍有随上下文增长的 MLA 缓存。**
+论文 §5.1 说明，KDA 用每 head 固定形状的 recurrent state 保存历史；MLA 则保留各历史位置的 latent。**固定大小描述的是 KDA 单个状态的形状，整个混合模型仍有随上下文增长的 MLA 缓存**。
 
 论文 §5.1.2 的 **KDA Context Parallelism（KCP）**通过组合片段的状态转移恢复各段初始状态；vLLM 参数 **DCP**在这里讨论的是 decode 历史缓存分片。两者处理的对象、阶段和通信不同，不能仅因都有“context parallel”就等同。
 
@@ -114,7 +114,7 @@ $$
 | 草稿长度信息 | 训练时展开 7 步                      | 模型卡报告每 forward 起草 7 token；本笔记分析 K=4   |
 | 训练说明   | 目标冻结，优化 draft 和融合投影，使用 LK loss | 不能由 K3 论文推出该 checkpoint 的完整训练配方       |
 
-K3 的目标 MLA 使用 NoPE；[K3.1 DSpark 模型卡](https://huggingface.co/Inferact/Kimi-K3.1-Pro-DSpark-preview)另外声明了草稿的 causal MLA 与 YaRN。**目标模型和草稿模型的位置编码要分别读取配置。**
+K3 的目标 MLA 使用 NoPE；[K3.1 DSpark 模型卡](https://huggingface.co/Inferact/Kimi-K3.1-Pro-DSpark-preview)另外声明了草稿的 causal MLA 与 YaRN。**目标模型和草稿模型的位置编码要分别读取配置**。
 
 [[DSpark]] 中保留了具体结构、数学推导与源码位置，包括：
 
